@@ -45,7 +45,9 @@ def test_upstream_entrypoints_and_no_zero_test_green():
     text = str(w)
     assert 'npm --prefix apps/web run test:unit' in text
     assert 'npm --prefix apps/web run build' in text
-    assert '-DskipTests=false -Ddocker.skip=true clean verify' in text
+    assert '-DskipTests=false' in text and '-Ddocker.skip=true' in text
+    assert '-pl mall-portal,mall-admin -am clean verify' in text
+    assert '-Dsurefire.failIfNoSpecifiedTests=false' in text
     assert 'tools.shop_quality.junit_gate' in text
     assert '--network none' in text
     assert '--tmpfs /data:rw,uid=10001,gid=10001,mode=700' in text

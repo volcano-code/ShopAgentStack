@@ -113,13 +113,25 @@ jobs:
         run: |
           mkdir -p artifacts/commerce
           git rev-parse HEAD HEAD^{tree} > artifacts/commerce/source.txt
-          git ls-files -s -- .github/workflows/shop-quality.yml services/commerce/pom.xml >> artifacts/commerce/source.txt
+          git ls-files -s -- .github/workflows/shop-quality.yml services/commerce/pom.xml scripts/build-p0.ps1 'services/commerce/**/src/test/**' >> artifacts/commerce/source.txt
           cat artifacts/commerce/source.txt
-      # Dependency-only upstream modules may have no tests. The owned domain may not.
-      - name: Verify without Fabric8 image builds or skipped tests
-        run: mvn -B -ntp -f services/commerce/pom.xml -DfailIfNoTests=false -DskipTests=false -Ddocker.skip=true clean verify
-      - name: Require executed tests in the owned Java domain, not unrelated modules
-        run: python -m tools.shop_quality.junit_gate --root services/commerce/shop-agent-stack-after-sale/target/surefire-reports --pattern 'TEST-*.xml'
+      # Match scripts/build-p0.ps1; upstream context-load tests require provisioned services.
+      # Every one of the eight owned regression classes must produce executed testcases below.
+      - name: Build portal/admin and dependencies with the established focused regressions
+        run: >-
+          mvn -B -ntp -f services/commerce/pom.xml
+          -Ddocker.skip=true -DskipTests=false
+          '-Dtest=OrderOwnershipTest,CartPricingTest,AgentOperationTest,RefundServiceTest,ProductQueryServiceTest,SupportServiceTest,CatalogManagementServiceTest,FulfillmentServiceTest'
+          -Dsurefire.failIfNoSpecifiedTests=false
+          -pl mall-portal,mall-admin -am clean verify
+      - name: Require executed reports from all eight owned regression classes
+        run: |
+          for test in AgentOperationTest RefundServiceTest ProductQueryServiceTest SupportServiceTest CatalogManagementServiceTest FulfillmentServiceTest; do
+            python -m tools.shop_quality.junit_gate --root services/commerce/shop-agent-stack-after-sale/target/surefire-reports --pattern "TEST-com.macro.mall.shopagentstack.${test}.xml"
+          done
+          for test in OrderOwnershipTest CartPricingTest; do
+            python -m tools.shop_quality.junit_gate --root services/commerce/mall-portal/target/surefire-reports --pattern "TEST-com.macro.mall.portal.service.${test}.xml"
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

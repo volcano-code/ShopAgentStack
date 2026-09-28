@@ -2,6 +2,10 @@
 from pathlib import Path
 import subprocess
 import sys
+import os
+import re
+
+import pytest
 from urllib.parse import urlsplit
 
 import yaml
@@ -15,14 +19,63 @@ def load(path):
     return yaml.load((ROOT / path).read_text(), Loader=yaml.BaseLoader)
 
 
-def test_java_gate_is_domain_scoped_and_tests_are_not_skipped():
+DOMAIN_TESTS = ["AgentOperationTest", "RefundServiceTest", "ProductQueryServiceTest",
+                "SupportServiceTest", "CatalogManagementServiceTest", "FulfillmentServiceTest"]
+PORTAL_TESTS = ["OrderOwnershipTest", "CartPricingTest"]
+
+
+def commerce_commands():
     steps = load('.github/workflows/shop-quality.yml')['jobs']['commerce']['steps']
-    commands = [s['run'] for s in steps if 'run' in s]
-    assert any('-DfailIfNoTests=false' in c and '-DskipTests=false' in c for c in commands)
+    return [s['run'] for s in steps if 'run' in s]
+
+
+def test_java_gate_is_domain_scoped_and_tests_are_not_skipped():
+    commands = commerce_commands()
+    build = next(c for c in commands if 'mvn -B' in c)
+    assert '-DskipTests=false' in build and '-Ddocker.skip=true' in build
+    assert '-Dsurefire.failIfNoSpecifiedTests=false' in build
+    assert '-pl mall-portal,mall-admin -am clean verify' in build
+    selected = re.search(r"-Dtest=([^'\s]+)", build).group(1).split(',')
+    assert set(selected) == set(DOMAIN_TESTS + PORTAL_TESTS) and len(selected) == 8
     gates = [c for c in commands if 'tools.shop_quality.junit_gate' in c]
     assert len(gates) == 1
     assert '--root services/commerce/shop-agent-stack-after-sale/target/surefire-reports' in gates[0]
-    assert "--pattern 'TEST-*.xml'" in gates[0]
+    assert '--root services/commerce/mall-portal/target/surefire-reports' in gates[0]
+    assert 'TEST-com.macro.mall.shopagentstack.${test}.xml' in gates[0]
+    assert 'TEST-com.macro.mall.portal.service.${test}.xml' in gates[0]
+
+
+@pytest.mark.parametrize('missing', [None] + DOMAIN_TESTS + PORTAL_TESTS)
+def test_each_required_report_must_exist(tmp_path, missing):
+    # These synthetic XML documents test the gate, not the underlying Java business logic.
+    for module, package, classes in [
+        ('shop-agent-stack-after-sale', 'com.macro.mall.shopagentstack', DOMAIN_TESTS),
+        ('mall-portal', 'com.macro.mall.portal.service', PORTAL_TESTS),
+    ]:
+        target = tmp_path / 'services/commerce' / module / 'target/surefire-reports'
+        target.mkdir(parents=True)
+        for name in classes:
+            if name != missing:
+                (target / f'TEST-{package}.{name}.xml').write_text(
+                    f'<testsuite><testcase classname="{package}.{name}" name="synthetic"/></testsuite>')
+        # Passing an unrelated class must not conceal a missing required class.
+        (target / 'TEST-Unrelated.xml').write_text('<testsuite><testcase name="unrelated"/></testsuite>')
+    gate = next(c for c in commerce_commands() if 'tools.shop_quality.junit_gate' in c)
+    env = os.environ.copy()
+    env['PYTHONPATH'] = str(ROOT)
+    result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', gate], cwd=tmp_path,
+                            env=env, capture_output=True, text=True)
+    assert (result.returncode == 0) == (missing is None), result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('element', ['skipped', 'failure', 'error'])
+def test_report_file_without_successful_execution_fails(tmp_path, element):
+    report = tmp_path / 'TEST-com.macro.mall.shopagentstack.AgentOperationTest.xml'
+    report.write_text(f'<testsuite><testcase name="synthetic"><{element}/></testcase></testsuite>')
+    proc = subprocess.run([sys.executable, '-m', 'tools.shop_quality.junit_gate', '--root',
+                           str(tmp_path), '--pattern', report.name],
+                          cwd=ROOT, capture_output=True, text=True)
+    assert proc.returncode == 1
 
 
 def test_unrelated_tests_do_not_make_missing_domain_tests_pass(tmp_path):
