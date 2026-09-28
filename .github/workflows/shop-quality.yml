@@ -1,0 +1,166 @@
+# M1.2 candidate: hosted Actions and full image execution remain pending.
+# No deployment, no repository writes, no live LLM keys, no destructive Compose tests.
+name: Shop quality
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: shop-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  quality-tooling:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install separate tooling dependencies (do not change Agent lock)
+        run: python -m pip install -r tools/shop_quality/requirements-test.txt -r tools/shop_observability/requirements.txt
+      - name: Test evaluator, workflow contract, and SDK instrumentation
+        run: |
+          mkdir -p artifacts/quality
+          python -m pytest tools/shop_quality/tests tools/shop_observability/tests -q --junitxml=artifacts/quality/tests.xml
+      - name: Refuse zero executed tooling tests
+        run: python -m tools.shop_quality.junit_gate --root artifacts/quality --pattern tests.xml
+      - name: Exercise positive AND negative evaluator gates
+        run: |
+          python -m tools.shop_quality evaluate --cases tools/shop_quality/fixtures/cases.jsonl --runs tools/shop_quality/fixtures/runs-valid.jsonl --manifest tools/shop_quality/fixtures/manifest.json --gates tools/shop_quality/fixtures/gates.json --out artifacts/quality/fixture-valid --allow-fixture
+          set +e
+          python -m tools.shop_quality evaluate --cases tools/shop_quality/fixtures/cases.jsonl --runs tools/shop_quality/fixtures/runs-adversarial.jsonl --manifest tools/shop_quality/fixtures/manifest.json --gates tools/shop_quality/fixtures/gates.json --out artifacts/quality/fixture-adversarial --allow-fixture
+          code=$?
+          set -e
+          test "$code" -eq 1
+      - name: Actual SDK smoke trace (synthetic operations, not application tracing)
+        run: python -m tools.shop_observability.examples.trace_demo --out artifacts/quality/trace-smoke.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: quality-python-${{ matrix.python }}
+          path: artifacts/quality/
+          if-no-files-found: error
+          retention-days: 14
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Locked install
+        run: npm --prefix apps/web ci
+      - name: Existing frontend unit test entrypoint
+        run: npm --prefix apps/web run test:unit
+      - name: Existing build already includes tsc --noEmit
+        run: npm --prefix apps/web run build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: web-build
+          path: apps/web/dist/
+          if-no-files-found: error
+          retention-days: 7
+  commerce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: services/commerce/**/pom.xml
+          overwrite-settings: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Verify without Fabric8 image builds or skipped tests
+        run: mvn -B -ntp -f services/commerce/pom.xml -DskipTests=false -Ddocker.skip=true clean verify
+      - name: Refuse green builds with zero executed Java tests
+        run: python -m tools.shop_quality.junit_gate --root services/commerce --pattern '**/target/*-reports/TEST-*.xml'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: commerce-tests
+          path: services/commerce/**/target/*-reports/
+          if-no-files-found: error
+          retention-days: 14
+  agent:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        otel: ['false', 'true']
+    env:
+      CONTAINER_NAME: shop-agent-test-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.otel }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Build actual Agent Dockerfile with requirements.lock
+        run: docker build --build-arg SHOP_AGENT_STACK_WITH_OTEL=${{ matrix.otel }} --tag shop-agent-quality:ci services/agent
+      - name: Unit and contract tests with no outbound network
+        run: |
+          docker run --name "$CONTAINER_NAME" -e SHOP_AGENT_STACK_REQUIRE_REAL_MCP_TEST=${{ matrix.otel }} --network none --cap-drop ALL --security-opt no-new-privileges --tmpfs /data:rw,uid=10001,gid=10001,mode=700 shop-agent-quality:ci python -m pytest tests -q --junitxml=/tmp/agent-tests.xml
+      - name: Collect report (missing report is a failure)
+        if: always()
+        run: |
+          mkdir -p artifacts/agent
+          docker cp "$CONTAINER_NAME:/tmp/agent-tests.xml" artifacts/agent/tests.xml
+          python -m tools.shop_quality.junit_gate --root artifacts/agent --pattern 'tests.xml'
+      - name: Remove only this job's container
+        if: always()
+        run: |
+          if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+            docker rm -f "$CONTAINER_NAME"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: agent-tests-otel-${{ matrix.otel }}
+          path: artifacts/agent/
+          if-no-files-found: error
+          retention-days: 14
+  required:
+    name: Shop quality required
+    if: always()
+    needs: [quality-tooling, web, commerce, agent]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      JOB_RESULTS: ${{ toJSON(needs) }}
+    steps:
+      - name: Fail for any skipped, failed or cancelled prerequisite
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          jobs = json.loads(os.environ['JOB_RESULTS'])
+          for name, value in jobs.items():
+              print(name, value['result'])
+          sys.exit(0 if jobs and all(v['result'] == 'success' for v in jobs.values()) else 1)
+          PY
