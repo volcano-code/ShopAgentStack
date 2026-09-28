@@ -69,3 +69,13 @@ def test_transport_workflow_runs_real_readback_after_bounded_readiness():
     assert '--timeout 120' in commands[ready]
     assert any('git rev-parse HEAD HEAD^{tree}' in c for c in commands)
     assert any('logs --no-color otel-collector tempo' in c for c in commands)
+
+
+def test_diagnostic_network_can_publish_without_public_default_bind():
+    config = load('deploy/observability/compose.yaml')
+    network = config['networks']['default']
+    assert network['driver'] == 'bridge'
+    assert network.get('internal', 'false') == 'false'
+    assert network['driver_opts']['com.docker.network.bridge.host_binding_ipv4'] == '127.0.0.1'
+    for service in config['services'].values():
+        assert all(port.startswith('127.0.0.1:') for port in service.get('ports', []))

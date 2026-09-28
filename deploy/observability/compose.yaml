@@ -60,6 +60,11 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: 512m
     restart: unless-stopped
+# Local diagnostics must publish ports to the host. Internal-only bridge networks
+# can ignore those mappings. This bridge is NOT an outbound-isolation boundary.
+# See docs/observability-network.md; business Compose networks are unchanged.
 networks:
   default:
-    internal: true
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: '127.0.0.1'

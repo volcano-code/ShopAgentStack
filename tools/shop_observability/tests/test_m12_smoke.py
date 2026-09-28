@@ -106,7 +106,9 @@ def test_config_is_pinned_local_bounded_and_no_fake_health_shell():
         assert service['cap_drop']==['ALL'] and service['read_only']
         assert service['mem_limit']
         for port in service.get('ports',[]):assert port.startswith('127.0.0.1:')
-    assert config['networks']['default']['internal']
+    assert config['networks']['default']['driver']=='bridge'
+    assert not config['networks']['default'].get('internal',False)
+    assert config['networks']['default']['driver_opts']['com.docker.network.bridge.host_binding_ipv4']=='127.0.0.1'
     assert config['services']['grafana']['environment']['GF_AUTH_ANONYMOUS_ENABLED']=='false'
     assert ':?' in config['services']['grafana']['environment']['GF_SECURITY_ADMIN_PASSWORD']
     collector=yaml.safe_load((ROOT/'deploy/observability/otel-collector.yaml').read_text())
