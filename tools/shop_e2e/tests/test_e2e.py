@@ -127,7 +127,7 @@ def test_receipts_accept_identifiers_only(tmp_path, bad):
 def readback(refunded):
     return {"order_id": 7, "order_status": 4 if refunded else 1, "pay_amount": 49.9,
         "sale_count": int(refunded), "refunded_count": int(refunded), "case_id": 3 if refunded else None,
-        "ledger_count": int(refunded), "ledger_amount": 49.9 if refunded else 0,
+        "ledger_count": int(refunded), "ledger_case_id": 3 if refunded else None, "ledger_amount": 49.9 if refunded else 0,
         "job_count": int(refunded), "done_jobs": int(refunded), "refund_events": int(refunded),
         "operation_count": 1, "operation_status": "SUCCEEDED" if refunded else "CANCELLED",
         "operation_case": 3 if refunded else None, "consumed": int(refunded)}
@@ -189,3 +189,60 @@ def test_failure_excerpt_removes_secrets_and_bounds_output(tmp_path):
     result = runner.redact(tmp_path, text)
     assert secret not in result and "eyJhbGci" not in result and "C" * 43 not in result
     assert len(result) <= 6000
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_first_failure_is_not_hidden_by_cleanup(monkeypatch, tmp_path, cleanup_fails):
+    def prepare(*args):
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / ".env").write_text("KEY=synthetic-secret\n")
+    monkeypatch.setattr(runner, "prepare", prepare)
+    monkeypatch.setattr(runner, "load_state", lambda _: (P, ["compose-double"]))
+    monkeypatch.setattr(runner, "resources", lambda *a: {"container": [], "volume": [], "network": []})
+    called = []
+    def command(state, name, args, **kwargs):
+        if name == "source": raise runner.StageError("source: exit 1")
+        return ""
+    def cleanup(_):
+        called.append(True)
+        if cleanup_fails: raise runner.StageError("cleanup failed")
+    monkeypatch.setattr(runner, "command", command)
+    monkeypatch.setattr(runner, "cleanup", cleanup)
+    assert runner.run(tmp_path) == 1
+    report = json.loads((tmp_path / "artifacts/evidence.json").read_text())
+    assert called == [True] and report["status"] == "failed"
+    assert report["cleanup_verified"] is not cleanup_fails
+    assert report["failure_stage"] == "source: exit 1"
+
+
+def test_cleanup_refuses_modified_compose(monkeypatch, tmp_path):
+    root = fake_checkout(tmp_path)
+    state = root / ".local/test"
+    spec = s.prepare(root, state)
+    monkeypatch.setattr(runner, "ROOT", root)
+    assert runner.load_state(state)[0] == spec["name"]
+    spec["services"]["mysql"]["image"] = "not-the-owned-configuration"
+    (state / "compose.json").write_text(json.dumps(spec))
+    with pytest.raises(ValueError, match="changed"): runner.load_state(state)
+
+
+def test_dirty_source_cannot_be_reported_as_committed_acceptance(monkeypatch, tmp_path):
+    def prepare(*args):
+        (tmp_path / "artifacts").mkdir()
+        (tmp_path / ".env").write_text("KEY=synthetic-secret\n")
+    monkeypatch.setattr(runner, "prepare", prepare)
+    monkeypatch.setattr(runner, "load_state", lambda _: (P, ["compose-double"]))
+    monkeypatch.setattr(runner, "resources", lambda *a: {"container": [], "volume": [], "network": []})
+    calls = []
+    def command(state, name, args, **kwargs):
+        calls.append(name)
+        if name == "source": return "a" * 40 + "\n" + "b" * 40 + "\n"
+        if name == "worktree-check": return " M services/agent/implementation.py\n"
+        return ""
+    monkeypatch.setattr(runner, "command", command)
+    monkeypatch.setattr(runner, "cleanup", lambda _: None)
+    assert runner.run(tmp_path) == 1
+    report = json.loads((tmp_path / "artifacts/evidence.json").read_text())
+    assert report["status"] == "failed" and report["cleanup_verified"]
+    assert report["failure_stage"].startswith("worktree-check:")
+    assert "image-build" not in calls and "startup" not in calls and "browser" not in calls

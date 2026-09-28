@@ -21,6 +21,7 @@ python -m tools.shop_e2e run
 入口拒绝覆盖已存在的 `.local/business-e2e`。重跑可使用新的状态目录：
 `python -m tools.shop_e2e run --state .local/business-e2e-second`。
 未准备应用构建产物时会直接拒绝，不会停止本地展示服务来重新构建。
+验收要求 Git 工作区干净，避免把未提交的实现错误归因于 HEAD 提交。
 
 ## 隔离与清理
 

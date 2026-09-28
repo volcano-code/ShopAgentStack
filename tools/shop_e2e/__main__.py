@@ -113,6 +113,10 @@ def run(state: Path) -> int:
             raise StageError("isolated project already exists")
         source = command(state, "source", ["git", "rev-parse", "HEAD", "HEAD^{tree}"], timeout=10).split()
         report["checkout_sha"], report["tree_sha"] = source
+        dirty = command(state, "worktree-check", ["git", "status", "--porcelain", "--untracked-files=all"], timeout=10)
+        if dirty.strip():
+            raise StageError("worktree-check: commit or remove untracked source changes before acceptance")
+        report["worktree_clean"] = True
         inputs = [*sorted((state / "init").glob("*.sql")), ROOT / "services/agent/requirements.lock", ROOT / "apps/web/package-lock.json",
                   *[ROOT / f"services/commerce/mall-{s}/target/mall-{s}-1.0-SNAPSHOT.jar" for s in ("portal", "admin")]]
         report["input_sha256"] = {str(p.relative_to(state) if p.is_relative_to(state) else p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in inputs}
@@ -154,11 +158,12 @@ def run(state: Path) -> int:
             log = state / ("private-" + str(exc).split(":", 1)[0] + ".log")
             if log.is_file():
                 details += "\n" + log.read_text()[-12000:]
+        (state / "artifacts" / "failure-excerpt.txt").write_text(redact(state, details), encoding="utf-8")
         try:
-            details += "\n" + command(state, "failure-services", [*base, "logs", "--no-color", "--tail", "20", "portal", "admin", "mysql", "agent", "commerce-mcp"], timeout=30)
+            service_log = command(state, "failure-services", [*base, "logs", "--no-color", "--tail", "20", "portal", "admin", "mysql", "agent", "commerce-mcp"], timeout=30)
+            (state / "artifacts" / "service-excerpt.txt").write_text(redact(state, service_log), encoding="utf-8")
         except (StageError, OSError):
             pass
-        (state / "artifacts" / "failure-excerpt.txt").write_text(redact(state, details), encoding="utf-8")
         print("business-e2e failed; private diagnostics remain in the test state", file=sys.stderr)
     finally:
         try:
