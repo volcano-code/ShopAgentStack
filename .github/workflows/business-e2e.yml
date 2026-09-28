@@ -1,0 +1,33 @@
+# Source capture is provenance only, not a business test result.
+name: Business E2E
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: shop-business-e2e-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  source:
+    name: Source provenance (not E2E acceptance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Archive tracked source only
+        shell: bash
+        run: |
+          mkdir -p artifacts/source
+          git rev-parse HEAD HEAD^{tree} > artifacts/source/source.txt
+          git ls-files -s > artifacts/source/tree.txt
+          git archive --format=zip --output=artifacts/source/source.zip HEAD
+          sha256sum artifacts/source/source.zip > artifacts/source/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: business-source
+          path: artifacts/source/
+          retention-days: 7
+          if-no-files-found: error
