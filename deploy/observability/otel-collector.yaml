@@ -1,0 +1,52 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 160
+    spike_limit_mib: 32
+  transform/privacy:
+    # On transformation failure DROP the payload instead of forwarding unredacted data.
+    error_mode: propagate
+    trace_statements:
+      - keep_keys(resource.attributes, ["service.name"])
+      - keep_keys(scope.attributes, [])
+      - set(scope.name, "shop-agent-stack")
+      - set(scope.version, "")
+      - keep_keys(span.attributes, ["http.request.method", "http.response.status_code", "shop.tool.name", "shop.run.status", "shop.failure.category", "shop.provider.fixture", "gen_ai.provider.name", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens"])
+      - set(span.status.message, "")
+      - set(span.trace_state, "")
+      - 'set(span.name, "redacted.operation") where not IsMatch(span.name, "^(agent.run|llm.call|tool.call|mcp.request|commerce.call|http.request|retrieval.search|source.validate)$")'
+  filter/drop_events:
+    error_mode: propagate
+    traces:
+      spanevent: ['true']
+  batch:
+    timeout: 1s
+    send_batch_size: 64
+    send_batch_max_size: 128
+exporters:
+  otlp_http/tempo:
+    endpoint: http://tempo:4318
+    timeout: 3s
+    sending_queue:
+      enabled: true
+      queue_size: 256
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 5s
+      max_elapsed_time: 15s
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/privacy, filter/drop_events, batch]
+      exporters: [otlp_http/tempo]

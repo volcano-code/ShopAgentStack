@@ -1,0 +1,28 @@
+# This file is additive. Installer refuses to overwrite an existing Dependabot config.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /apps/web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: maven
+    directory: /services/commerce
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: pip
+    directory: /tools/shop_quality
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  - package-ecosystem: pip
+    directory: /tools/shop_observability
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

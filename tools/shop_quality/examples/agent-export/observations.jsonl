@@ -1,0 +1,1 @@
+{"case_id": "case-1", "run_id": "synthetic-run", "latency_ms": 12, "abstained": false, "retrieval_unit": "initial_query", "retrieved_ids": ["P2V1C1", "P1V1C1"], "task_judgment": {"passed": true, "method": "human", "reference": "synthetic-review-1"}}

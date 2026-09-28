@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "run_id": "evaluator-fixture-v1",
+  "source_kind": "fixture",
+  "dataset_sha256": "ee599351cacc103d2bbe7ffca9adda96a41be0083020373ab796bc248cf2434b",
+  "system": {
+    "git_revision": "unavailable",
+    "provider": "not-called",
+    "model": "not-called",
+    "prompt_version": "not-applicable",
+    "retrieval_version": "synthetic-ranked-IDs"
+  }
+}

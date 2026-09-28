@@ -1,0 +1,65 @@
+# Local diagnostics only. No business containers, paid model keys, or public listeners.
+name: shop-observability
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.161.0
+    command: ['--config=/etc/otelcol/config.yaml']
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - '127.0.0.1:14318:4318'
+      - '127.0.0.1:13133:13133'
+    depends_on:
+      - tempo
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    restart: unless-stopped
+  tempo:
+    image: grafana/tempo:3.0.3
+    command: ['-config.file=/etc/tempo/config.yaml', '-target=all']
+    user: '10001:10001'
+    volumes:
+      - ./tempo.yaml:/etc/tempo/config.yaml:ro
+    # Deliberately ephemeral and bounded: restarting removes the local diagnostic traces.
+    tmpfs:
+      - /var/tempo:rw,uid=10001,gid=10001,mode=700,size=268435456
+      - /tmp:rw,size=16777216
+    ports:
+      - '127.0.0.1:13200:3200'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    restart: unless-stopped
+  grafana:
+    image: grafana/grafana:13.2.2
+    user: '472:472'
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${SHOP_OBS_GRAFANA_PASSWORD:?Generate a private env file with tools.shop_observability.local_env}
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false'
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    tmpfs:
+      - /var/lib/grafana:rw,uid=472,gid=472,mode=700,size=134217728
+      - /var/log/grafana:rw,uid=472,gid=472,mode=700,size=16777216
+      - /tmp:rw,size=16777216
+    ports:
+      - '127.0.0.1:13000:3000'
+    depends_on:
+      - tempo
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    restart: unless-stopped
+networks:
+  default:
+    internal: true
