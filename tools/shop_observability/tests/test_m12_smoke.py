@@ -117,9 +117,9 @@ def test_config_is_pinned_local_bounded_and_no_fake_health_shell():
     json.loads((ROOT/'deploy/observability/grafana/dashboards/shop-traces.json').read_text())
 
 
-def test_manual_workflow_has_no_paid_keys_and_fails_on_missing_readback():
+def test_transport_workflow_has_no_paid_keys_and_fails_on_missing_readback():
     w=yaml.load((ROOT/'.github/workflows/observability-smoke.yml').read_text(),Loader=yaml.BaseLoader)
-    assert set(w['on'])=={'workflow_dispatch'} and w['permissions']=={'contents':'read'}
+    assert set(w['on'])=={'pull_request','workflow_dispatch'} and w['permissions']=={'contents':'read'}
     runs=[]
     for job in w['jobs'].values():
         for step in job['steps']:
