@@ -84,8 +84,11 @@ def verify(document: dict, tid: str, kind: str) -> dict:
                     ("refund.publish", "refund.consume", "shop-commerce-admin"),
                     ("refund.consume", "db.refund.transaction", "shop-commerce-admin")]
         root_ok = roots[0]["name"] == "commerce.request" and roots[0]["service"] == "shop-commerce-admin"
-    if not root_ok or not all(edge(*e) for e in required):
-        raise ValueError("incomplete business trace chain")
+    missing = [f"{a}->{b}" for a, b, service in required if not edge(a, b, service)]
+    if not root_ok or missing:
+        # All labels below were already checked against fixed allowlists. No raw payload.
+        present = sorted({f"{n['service']}:{n['name']}" for n in nodes.values()})
+        raise ValueError(f"incomplete business trace chain; scope={kind}; root_ok={root_ok}; missing={missing}; present={present}")
     return {"trace_id": tid, "span_count": len(nodes), "required_edges_verified": len(required),
             "spans": sorted(nodes.values(), key=lambda n: n["id"]), "verified": True}
 
@@ -132,7 +135,8 @@ except urllib.error.HTTPError as e:
                 result[kind] = verify(json.loads(raw), tid, kind)
                 break
             except ValueError as exc:
-                if str(exc) not in {"incomplete business trace chain", "incomplete trace roots", "orphan or cyclic trace"} or time.monotonic() >= deadline:
+                incomplete = str(exc).startswith("incomplete business trace chain;") or str(exc) in {"incomplete trace roots", "orphan or cyclic trace"}
+                if not incomplete or time.monotonic() >= deadline:
                     raise
                 time.sleep(0.5)
     # Bind the saved approval span ID, not only a trace ID match.

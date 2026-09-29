@@ -47,7 +47,17 @@ jobs:
           -Dsurefire.failIfNoSpecifiedTests=false
           -pl mall-portal,mall-admin -am clean verify
       - name: Require executed Java tracing tests
-        run: python -m tools.shop_quality.junit_gate --root services/commerce/shop-agent-stack-after-sale/target/surefire-reports --pattern TEST-com.macro.mall.shopagentstack.CommerceTracingTest.xml
+        run: |
+          mkdir -p artifacts/java-tracing
+          git rev-parse HEAD HEAD^{tree} > artifacts/java-tracing/source.txt
+          python -m tools.shop_quality.junit_gate --root services/commerce/shop-agent-stack-after-sale/target/surefire-reports --pattern TEST-com.macro.mall.shopagentstack.CommerceTracingTest.xml | tee artifacts/java-tracing/tests.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: java-tracing-tests
+          path: artifacts/java-tracing/
+          if-no-files-found: error
+          retention-days: 7
       - name: Build real frontend and install locked Chromium
         run: |
           npm --prefix apps/web ci

@@ -48,7 +48,7 @@ public final class CommerceTracing implements AutoCloseable {
         Span span=tracer.spanBuilder(name).setSpanKind(kind).setParent(parent).startSpan();
         return new Operation(span);
     }
-    /** Best-effort sidecar in the SAME approval transaction; failure never changes business intent. */
+    /** Diagnostic sidecar in the SAME transaction; database-wide errors can still abort it. */
     public void captureIntent(JdbcTemplate db,long id) {
         String value=currentParent();
         if(value==null) return;

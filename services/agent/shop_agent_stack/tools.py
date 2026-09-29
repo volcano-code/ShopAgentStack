@@ -4,7 +4,8 @@ import os
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from .observability import inject_internal_trace, observe_tool
+from .observability import observe_tool
+from .observability_transport import MCPTraceBridge
 
 MODEL_TOOLS = {"list_my_orders", "get_my_order", "list_my_after_sales", "preview_after_sale", "get_operation_status", "search_policies", "search_products", "get_product"}
 
@@ -12,11 +13,15 @@ MODEL_TOOLS = {"list_my_orders", "get_my_order", "list_my_after_sales", "preview
 @asynccontextmanager
 async def connect(execution: str):
     # The transport lives for the whole run and carries immutable per-run identity.
-    async with httpx.AsyncClient(headers={"X-ShopAgentStack-Execution": execution}, timeout=20, trust_env=False, event_hooks={"request": [inject_internal_trace]}) as client:
-        async with streamable_http_client(os.getenv("SHOP_AGENT_STACK_MCP_URL", "http://commerce-mcp:8011/mcp"), http_client=client) as (read, write, _):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                yield session
+    bridge = MCPTraceBridge()
+    try:
+        async with httpx.AsyncClient(headers={"X-ShopAgentStack-Execution": execution}, timeout=20, trust_env=False, event_hooks={"request": [bridge.inject]}) as client:
+            async with streamable_http_client(os.getenv("SHOP_AGENT_STACK_MCP_URL", "http://commerce-mcp:8011/mcp"), http_client=client) as (read, write, _):
+                async with ClientSession(read, bridge.wrap(write)) as session:
+                    await session.initialize()
+                    yield session
+    finally:
+        bridge.clear()
 
 
 @observe_tool

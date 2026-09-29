@@ -384,15 +384,20 @@ def test_actual_tools_connect_installs_hook_and_preserves_grant(observer, monkey
         clients.append(http_client)
         assert http_client._trust_env is False
         assert http_client.headers["X-ShopAgentStack-Execution"]=="synthetic-secret-grant"
-        assert http_client.event_hooks["request"]==[obs.inject_internal_trace]
-        yield (None,None,None)
+        hook=http_client.event_hooks["request"][0]
+        assert hook.__self__.__class__.__name__=="MCPTraceBridge"
+        class WriteStream:
+            async def send(self,item): pass
+        yield (None,WriteStream(),None)
     class Session:
-        def __init__(self,*args): pass
+        def __init__(self,read,write): self.write=write
         async def __aenter__(self): return self
         async def __aexit__(self,*args): pass
         async def initialize(self): pass
         async def call_tool(self,name,arguments):
-            await clients[-1].post("http://commerce-mcp:8011/mcp",json={"synthetic":True})
+            # Explicit SDK-shaped double; real background queue has a separate SDK test.
+            await self.write.send(types.SimpleNamespace(message=types.SimpleNamespace(root=types.SimpleNamespace(id=1,method="tools/call"))))
+            await clients[-1].post("http://commerce-mcp:8011/mcp",json={"id":1,"method":"tools/call","params":{"arguments":{}}})
             return types.SimpleNamespace(isError=False,structuredContent={"ok":True})
     module.tools.streamable_http_client=transport;module.tools.ClientSession=Session
     original=httpx.AsyncClient
