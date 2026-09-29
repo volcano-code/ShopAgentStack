@@ -22,12 +22,27 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
-async def execute(stage: str) -> dict:
+def dependencies():
+    """The probe is mounted outside the image's WORKDIR, not installed as a package.
+
+    Absolute-path Python execution puts /opt/shop_e2e (not /app) on sys.path.
+    The harness explicitly chooses /app as cwd; validate that image layout and
+    add its application root before importing the existing integration helper.
+    No global PYTHONPATH, production image, credentials or protocol is changed.
+    """
+    app = Path.cwd().resolve()
+    if not (app / "shop_agent_stack/__init__.py").is_file() or not (app / "tests/test_mcp_integration.py").is_file():
+        raise ValueError("probe requires the Agent image working directory")
+    sys.path[:0] = [str(app), str(app / "tests")]
     import httpx
-    sys.path.insert(0, "/app/tests")
     from test_mcp_integration import customer
     from shop_agent_stack import tools
     from shop_agent_stack.business import identity
+    return httpx, customer, tools, identity
+
+
+async def execute(stage: str) -> dict:
+    httpx, customer, tools, identity = dependencies()
 
     require(stage in STAGES, "invalid probe stage")
     data = {} if stage == "initial" else json.loads(STATE.read_text())
@@ -166,9 +181,13 @@ async def execute(stage: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", choices=STAGES)
+    parser.add_argument("stage", choices=(*STAGES, "check-imports"))
     stage = parser.parse_args().stage
-    print(json.dumps(asyncio.run(execute(stage))))
+    if stage == "check-imports":
+        dependencies()
+        print(json.dumps({"imports_verified": True}))
+    else:
+        print(json.dumps(asyncio.run(execute(stage))))
 
 
 if __name__ == "__main__":

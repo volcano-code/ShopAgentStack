@@ -133,8 +133,12 @@ def fault(state: Path, base: list[str], command, service: str, action):
 def collect(state: Path, base: list[str], command, root: Path) -> dict:
     import hashlib
     receipts = []
+    executable = [*base, "exec", "-T", "-w", "/app", "agent", "python", "/opt/shop_e2e/hybrid_probe.py"]
+    check = json.loads(command(state, "hybrid-import-preflight", [*executable, "check-imports"], timeout=30).strip())
+    if not isinstance(check, dict) or set(check) != {"imports_verified"} or check["imports_verified"] is not True:
+        raise ValueError("Agent probe import preflight did not execute")
     def probe(stage):
-        raw = command(state, "hybrid-" + stage, [*base, "exec", "-T", "agent", "python", "/opt/shop_e2e/hybrid_probe.py", stage], timeout=300)
+        raw = command(state, "hybrid-" + stage, [*executable, stage], timeout=300)
         item = json.loads(raw.strip())
         receipts.append(item)
         # No credentials/content in these reviewed aggregate receipts. Retain partial outcomes.
