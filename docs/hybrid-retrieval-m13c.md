@@ -64,3 +64,11 @@ python -m tools.shop_e2e cleanup --state .local/hybrid-e2e
 hash 和合成截图；中间 bearer、索引密钥、原始 HTTP 响应和模型文件不得发布。
 `hybrid-progress.json` 保留已完成阶段，`evidence.json` 同时要求检索、业务和清理通过。
 本文件说明实现契约，不预先宣称任何提交的 CI 已通过。
+
+## 镜像来源修复
+
+首轮托管测试在启动阶段发现原 `minio/minio` Docker Hub 镜像无法拉取。隔离栈改用
+MinIO 自己的 `quay.io/minio/minio`，保持 `RELEASE.2024-12-18T13-15-44Z` 标签；
+没有使用未知第三方镜像，也没有假装认证即可修复。此历史镜像仅用于无公网端口的
+临时测试，不能据此视为当前安全受支持的生产部署选型。来源切换仍需本次实跑验收。
+首个失败的 workflow 与 artifact 保留，不与后续成功混淆。
