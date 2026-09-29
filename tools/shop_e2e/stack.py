@@ -33,7 +33,7 @@ def validate_state(root: Path, state: Path) -> Path:
     return state
 
 
-def compose(root: Path, state: Path, project: str, *, tracing: bool = False) -> dict:
+def compose(root: Path, state: Path, project: str, *, tracing: bool = False, hybrid: bool = False) -> dict:
     if not PROJECT.fullmatch(project):
         raise ValueError("invalid isolated project")
     label = {LABEL: project}
@@ -94,16 +94,20 @@ def compose(root: Path, state: Path, project: str, *, tracing: bool = False) -> 
         "healthcheck": health(["CMD", "wget", "--spider", "-q", "http://127.0.0.1/"])}
     if tracing:
         add_tracing(root, services, bind)
+    extra_volumes = []
+    if hybrid:
+        from .hybrid_stack import add_hybrid
+        extra_volumes = add_hybrid(root, state, project, services, bind)
     for name, service in services.items():
         service.setdefault("networks", ["business"])
         service["labels"] = label.copy()
-        service["mem_limit"] = "1g" if name in ("mysql", "rabbitmq", "portal", "admin") else "512m"
+        service.setdefault("mem_limit", "1g" if name in ("mysql", "rabbitmq", "portal", "admin") else "512m")
     return {"name": project, "services": services,
             "networks": {"business": {"internal": True, "labels": label}, "edge": {"labels": label}},
-            "volumes": {k: {"labels": label} for k in ("mysql_data", "rabbit_data", "mongo_data", "agent_data")}}
+            "volumes": {k: {"labels": label} for k in ["mysql_data", "rabbit_data", "mongo_data", "agent_data", *extra_volumes]}}
 
 
-def prepare(root: Path, state: Path, *, tracing: bool = False) -> dict:
+def prepare(root: Path, state: Path, *, tracing: bool = False, hybrid: bool = False) -> dict:
     state = validate_state(root, state)
     required = [root / f"services/commerce/mall-{s}/target/mall-{s}-1.0-SNAPSHOT.jar" for s in ("portal", "admin")]
     required.append(root / "apps/web/dist/index.html")
@@ -111,13 +115,17 @@ def prepare(root: Path, state: Path, *, tracing: bool = False) -> dict:
         raise ValueError("build the Java jars and frontend before running business E2E")
     state.mkdir(mode=0o700, parents=True, exist_ok=False)
     project = "shop-e2e-" + secrets.token_hex(16)
-    write_private(state / "owner.json", json.dumps({"project": project, "root": str(root.resolve()), "scope": "synthetic-business-e2e-v1", "tracing": tracing}))
+    write_private(state / "owner.json", json.dumps({"project": project, "root": str(root.resolve()), "scope": "synthetic-business-e2e-v1", "tracing": tracing, "hybrid": hybrid}))
     values = {f"SHOP_AGENT_STACK_{key}": secrets.token_urlsafe(48) for key in (
         "DB_PASSWORD", "DB_ROOT_PASSWORD", "MQ_PASSWORD", "PORTAL_JWT_SECRET", "ADMIN_JWT_SECRET", "BOOTSTRAP_ADMIN_PASSWORD", "BOOTSTRAP_SERVICE_PASSWORD")}
     write_private(state / ".env", "\n".join(f"{k}={v}" for k, v in values.items()) + "\n")
     write_private(state / "accounts.json", json.dumps([
         {"role": role, "username": "shop_agent_stack_" + role.lower(), "password": values[f"SHOP_AGENT_STACK_BOOTSTRAP_{role}_PASSWORD"]} for role in ("ADMIN", "SERVICE")]))
     write_private(state / "agent-key", base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())
+    if hybrid:
+        write_private(state / "index-key", secrets.token_hex(32))
+        (state / "index-key").chmod(0o644)
+        (state / "accounts.json").chmod(0o644)  # parent 0700; direct mount for UID 10001
     # Parent is 0700 on the host; Docker mounts this file directly for UID 10001.
     (state / "agent-key").chmod(0o644)
     (state / "init").mkdir()
@@ -128,7 +136,7 @@ def prepare(root: Path, state: Path, *, tracing: bool = False) -> dict:
         shutil.copyfile(source, state / "init" / f"{index:03d}-{source.name}")
     (state / "artifacts").mkdir()
     (state / "receipts").mkdir()
-    spec = compose(root, state, project, tracing=tracing)
+    spec = compose(root, state, project, tracing=tracing, hybrid=hybrid)
     write_private(state / "compose.json", json.dumps(spec, indent=2))
     return spec
 

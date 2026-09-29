@@ -65,7 +65,10 @@ def load_state(state: Path) -> tuple[str, list[str]]:
     tracing = owner.get("tracing", False)
     if type(tracing) is not bool:
         raise ValueError("invalid test tracing mode")
-    if json.loads((state / "compose.json").read_text()) != compose(ROOT, state, project, tracing=tracing):
+    hybrid = owner.get("hybrid", False)
+    if type(hybrid) is not bool:
+        raise ValueError("invalid test hybrid mode")
+    if json.loads((state / "compose.json").read_text()) != compose(ROOT, state, project, tracing=tracing, hybrid=hybrid):
         raise ValueError("test Compose changed after preparation")
     return project, [*DOCKER, "compose", "--project-name", project, "--env-file", str(state / ".env"), "-f", str(state / "compose.json")]
 
@@ -102,8 +105,10 @@ def public_images(state: Path, base: list[str]) -> list[dict]:
              "image_id": v["Image"], "configured_image": v["Config"]["Image"]} for v in data]
 
 
-def run(state: Path, *, tracing: bool = False) -> int:
-    if tracing:
+def run(state: Path, *, tracing: bool = False, hybrid: bool = False) -> int:
+    if hybrid:
+        prepare(ROOT, state, tracing=tracing, hybrid=True)
+    elif tracing:
         prepare(ROOT, state, tracing=True)
     else:
         prepare(ROOT, state)
@@ -114,6 +119,8 @@ def run(state: Path, *, tracing: bool = False) -> int:
               "cleanup_verified": False, "stages": []}
     if tracing:
         report["scope"] = "M1.3b-isolated-synthetic-business-tracing"
+    if hybrid:
+        report["scope"] = "M1.3c-isolated-business-and-real-hybrid-lifecycle"
     code = 1
     try:
         # This fails instead of adopting another stack, even in the astronomically unlikely collision.
@@ -130,12 +137,22 @@ def run(state: Path, *, tracing: bool = False) -> int:
         report["input_sha256"] = {str(p.relative_to(state) if p.is_relative_to(state) else p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in inputs}
         command(state, "config", [*base, "config", "--quiet"], timeout=30)
         command(state, "image-build", [*base, "build", "commerce-mcp"], timeout=600)
+        if hybrid:
+            command(state, "hybrid-image-build", [*base, "--profile", "prepare", "build", "model-prefetch"], timeout=1200)
+            command(state, "hybrid-model-prefetch", [*base, "--profile", "prepare", "run", "--rm", "--no-deps", "model-prefetch"], timeout=900)
+            model_inputs = [ROOT / "evaluation/retrieval-matrix.json", ROOT / "services/retrieval/requirements.lock"]
+            report["input_sha256"].update({str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in model_inputs})
         command(state, "startup", [*base, "up", "-d", "--wait", "--wait-timeout", "240"], timeout=600)
         report["stages"].append("healthy-business-stack")
         report["images"] = public_images(state, base)
         address = command(state, "web-port", [*base, "port", "web", "80"], timeout=30).strip()
         if not re.fullmatch(r"127\.0\.0\.1:[1-9][0-9]{0,4}", address) or int(address.split(":")[1]) > 65535:
             raise StageError("unexpected published address")
+        if hybrid:
+            from .hybrid import collect as collect_hybrid
+            report["hybrid"] = collect_hybrid(state, base, command, ROOT)
+            report["hybrid_retrieval_verified"] = True
+            report["stages"].append("real-hybrid-lifecycle-and-fault-recovery")
         # The two selected tests exercise real MCP and Java, not an ASGI test double.
         command(state, "mcp", [*base, "exec", "-T", "-e", "SHOP_AGENT_STACK_INTEGRATION=true", "agent", "python", "-m", "pytest",
                     "tests/test_mcp_integration.py", "-q", "-p", "no:cacheprovider", "-k",
@@ -174,7 +191,7 @@ def run(state: Path, *, tracing: bool = False) -> int:
                 details += "\n" + log.read_text()[-12000:]
         (state / "artifacts" / "failure-excerpt.txt").write_text(redact(state, details), encoding="utf-8")
         try:
-            service_log = command(state, "failure-services", [*base, "logs", "--no-color", "--tail", "20", "portal", "admin", "mysql", "agent", "commerce-mcp"], timeout=30)
+            service_log = command(state, "failure-services", [*base, "logs", "--no-color", "--tail", "20", *(["portal", "admin", "mysql", "agent", "commerce-mcp"] + (["retrieval-worker", "milvus", "etcd", "minio"] if hybrid else []))], timeout=30)
             (state / "artifacts" / "service-excerpt.txt").write_text(redact(state, service_log), encoding="utf-8")
         except (StageError, OSError):
             pass
@@ -197,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("action", choices=["run", "cleanup"])
     parser.add_argument("--state", type=Path, default=ROOT / ".local/business-e2e")
     parser.add_argument("--tracing", action="store_true", help="require real business trace readback from an isolated Collector/Tempo")
+    parser.add_argument("--hybrid", action="store_true", help="require isolated real BGE/Milvus lifecycle and bounded fault recovery")
     args = parser.parse_args(argv)
     state = args.state.absolute()
     try:
@@ -206,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             cleanup(state)
             return 0
-        return run(state, tracing=args.tracing)
+        return run(state, tracing=args.tracing, hybrid=args.hybrid)
     except (OSError, ValueError, StageError, KeyError, TypeError) as exc:
         print("business-e2e refused: " + type(exc).__name__, file=sys.stderr)
         return 2
