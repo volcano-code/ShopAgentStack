@@ -22,7 +22,7 @@ def add_hybrid(root: Path, state: Path, project: str, services: dict, bind) -> l
         "command": ["etcd", "--advertise-client-urls=http://etcd:2379", "--listen-client-urls=http://0.0.0.0:2379", "--data-dir=/etcd"],
         "environment": {"ETCD_AUTO_COMPACTION_MODE": "revision", "ETCD_AUTO_COMPACTION_RETENTION": "1000"},
         "volumes": ["hybrid_etcd:/etcd"], "mem_limit": "256m"}
-    services["minio"] = {"image": "quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z",
+    services["minio"] = {"image": "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
         "command": ["minio", "server", "/data"], "volumes": ["hybrid_minio:/data"], "mem_limit": "512m"}
     services["milvus"] = {"image": "milvusdb/milvus:v2.6.15",
         "command": ["milvus", "run", "standalone"],

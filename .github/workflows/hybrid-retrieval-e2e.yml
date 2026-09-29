@@ -35,6 +35,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
+      - name: Check pinned object store before expensive preparation
+        run: |
+          image=$(python -c 'from pathlib import Path; from tools.shop_e2e.stack import compose; p=Path.cwd(); print(compose(p,p/".local/preflight","shop-e2e-"+"0"*32,hybrid=True)["services"]["minio"]["image"])')
+          docker pull "$image"
       - name: Unit tests for isolation and evidence rejection
         run: |
           python -m pip install -r tools/shop_quality/requirements-test.txt
