@@ -33,7 +33,7 @@ def validate_state(root: Path, state: Path) -> Path:
     return state
 
 
-def compose(root: Path, state: Path, project: str) -> dict:
+def compose(root: Path, state: Path, project: str, *, tracing: bool = False) -> dict:
     if not PROJECT.fullmatch(project):
         raise ValueError("invalid isolated project")
     label = {LABEL: project}
@@ -92,6 +92,8 @@ def compose(root: Path, state: Path, project: str) -> dict:
         "volumes": [bind(root / "apps/web/dist", "/usr/share/nginx/html"), bind(root / "deploy/nginx/shop_agent_stack-p2.conf", "/etc/nginx/conf.d/default.conf")],
         "depends_on": {k: {"condition": "service_healthy"} for k in ("portal", "admin", "agent")},
         "healthcheck": health(["CMD", "wget", "--spider", "-q", "http://127.0.0.1/"])}
+    if tracing:
+        add_tracing(root, services, bind)
     for name, service in services.items():
         service.setdefault("networks", ["business"])
         service["labels"] = label.copy()
@@ -101,7 +103,7 @@ def compose(root: Path, state: Path, project: str) -> dict:
             "volumes": {k: {"labels": label} for k in ("mysql_data", "rabbit_data", "mongo_data", "agent_data")}}
 
 
-def prepare(root: Path, state: Path) -> dict:
+def prepare(root: Path, state: Path, *, tracing: bool = False) -> dict:
     state = validate_state(root, state)
     required = [root / f"services/commerce/mall-{s}/target/mall-{s}-1.0-SNAPSHOT.jar" for s in ("portal", "admin")]
     required.append(root / "apps/web/dist/index.html")
@@ -109,7 +111,7 @@ def prepare(root: Path, state: Path) -> dict:
         raise ValueError("build the Java jars and frontend before running business E2E")
     state.mkdir(mode=0o700, parents=True, exist_ok=False)
     project = "shop-e2e-" + secrets.token_hex(16)
-    write_private(state / "owner.json", json.dumps({"project": project, "root": str(root.resolve()), "scope": "synthetic-business-e2e-v1"}))
+    write_private(state / "owner.json", json.dumps({"project": project, "root": str(root.resolve()), "scope": "synthetic-business-e2e-v1", "tracing": tracing}))
     values = {f"SHOP_AGENT_STACK_{key}": secrets.token_urlsafe(48) for key in (
         "DB_PASSWORD", "DB_ROOT_PASSWORD", "MQ_PASSWORD", "PORTAL_JWT_SECRET", "ADMIN_JWT_SECRET", "BOOTSTRAP_ADMIN_PASSWORD", "BOOTSTRAP_SERVICE_PASSWORD")}
     write_private(state / ".env", "\n".join(f"{k}={v}" for k, v in values.items()) + "\n")
@@ -126,6 +128,34 @@ def prepare(root: Path, state: Path) -> dict:
         shutil.copyfile(source, state / "init" / f"{index:03d}-{source.name}")
     (state / "artifacts").mkdir()
     (state / "receipts").mkdir()
-    spec = compose(root, state, project)
+    spec = compose(root, state, project, tracing=tracing)
     write_private(state / "compose.json", json.dumps(spec, indent=2))
     return spec
+
+
+def add_tracing(root: Path, services: dict, bind) -> None:
+    """Collector and Tempo stay on this test's internal network; no host trace ports."""
+    services["tempo"] = {
+        "image": "grafana/tempo:3.0.3", "command": ["-config.file=/etc/tempo/config.yaml", "-target=all"],
+        "user": "10001:10001", "read_only": True, "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+        "volumes": [bind(root / "deploy/observability/tempo.yaml", "/etc/tempo/config.yaml")],
+        "tmpfs": ["/var/tempo:rw,uid=10001,gid=10001,mode=700,size=268435456", "/tmp:rw,size=16777216"],
+    }
+    services["otel-collector"] = {
+        "image": "otel/opentelemetry-collector-contrib:0.161.0",
+        "command": ["--config=/etc/otelcol/config.yaml"], "depends_on": ["tempo"],
+        "read_only": True, "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"],
+        "volumes": [bind(root / "deploy/observability/otel-collector.yaml", "/etc/otelcol/config.yaml")],
+    }
+    for name in ("agent", "commerce-mcp", "portal", "admin"):
+        services[name]["environment"].update({
+            "SHOP_AGENT_STACK_OTEL_ENABLED": "true", "SHOP_AGENT_STACK_OTEL_EXPORTER": "otlp",
+            "SHOP_AGENT_STACK_OTEL_TRACES_ENDPOINT": "http://otel-collector:4318/v1/traces",
+            "SHOP_AGENT_STACK_OTEL_SAMPLE_RATIO": "1",  # Test only; production defaults to 0.1.
+        })
+    services["commerce-mcp"]["command"][1] = "shop_agent_stack.mcp_observed:app"
+    services["commerce-mcp"]["environment"]["SHOP_AGENT_STACK_OTEL_TRUST_INTERNAL"] = "true"
+    services["portal"]["environment"]["SHOP_AGENT_STACK_OTEL_TRUST_INTERNAL"] = "true"
+    for side in ("portal", "admin"):
+        services[side]["environment"]["SHOP_AGENT_STACK_OTEL_SERVICE"] = "shop-commerce-" + side

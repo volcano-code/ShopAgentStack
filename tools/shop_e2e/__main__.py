@@ -62,7 +62,10 @@ def load_state(state: Path) -> tuple[str, list[str]]:
     project = owner.get("project", "")
     if owner.get("scope") != "synthetic-business-e2e-v1" or owner.get("root") != str(ROOT) or not PROJECT.fullmatch(project):
         raise ValueError("not an owned test state")
-    if json.loads((state / "compose.json").read_text()) != compose(ROOT, state, project):
+    tracing = owner.get("tracing", False)
+    if type(tracing) is not bool:
+        raise ValueError("invalid test tracing mode")
+    if json.loads((state / "compose.json").read_text()) != compose(ROOT, state, project, tracing=tracing):
         raise ValueError("test Compose changed after preparation")
     return project, [*DOCKER, "compose", "--project-name", project, "--env-file", str(state / ".env"), "-f", str(state / "compose.json")]
 
@@ -99,13 +102,18 @@ def public_images(state: Path, base: list[str]) -> list[dict]:
              "image_id": v["Image"], "configured_image": v["Config"]["Image"]} for v in data]
 
 
-def run(state: Path) -> int:
-    prepare(ROOT, state)
+def run(state: Path, *, tracing: bool = False) -> int:
+    if tracing:
+        prepare(ROOT, state, tracing=True)
+    else:
+        prepare(ROOT, state)
     project, base = load_state(state)
     report = {"scope": "M1.3a-isolated-synthetic-business", "status": "failed", "project": project,
               "live_model_verified": False, "real_payment_verified": False,
               "hybrid_retrieval_verified": False, "distributed_trace_verified": False,
               "cleanup_verified": False, "stages": []}
+    if tracing:
+        report["scope"] = "M1.3b-isolated-synthetic-business-tracing"
     code = 1
     try:
         # This fails instead of adopting another stack, even in the astronomically unlikely collision.
@@ -137,7 +145,7 @@ def run(state: Path) -> int:
         report["mcp"] = ev.test_report(state / "mcp.xml", ev.MCP_TESTS)
         report["stages"].append("real-mcp-contracts")
         command(state, "browser", ["npm", "exec", "--no", "--", "playwright", "test", "--config", "playwright.business.config.ts"],
-                cwd=ROOT / "apps/web", timeout=480, extra={"SHOP_E2E_URL": "http://" + address, "SHOP_E2E_STATE": str(state)})
+                cwd=ROOT / "apps/web", timeout=480, extra={"SHOP_E2E_URL": "http://" + address, "SHOP_E2E_STATE": str(state), "SHOP_E2E_TRACING": str(tracing).lower()})
         report["browser"] = ev.test_report(state / "browser.xml", ev.BROWSER_TESTS)
         report["stages"].append("browser-confirmation-and-refund")
         for name, refunded in [("refunded", True), ("cancelled", False)]:
@@ -147,6 +155,12 @@ def run(state: Path) -> int:
                 input_text=ev.readback_sql(data), timeout=30)
             report[name] = ev.verify_readback(data, json.loads(raw.strip()), refunded)
         report["stages"].append("independent-mysql-readback")
+        if tracing:
+            from .traces import collect
+            report["traces"] = collect(state, base, command, report["refunded"]["case_id"])
+            report["distributed_trace_verified"] = True
+            report["distributed_trace_scope"] = "agent-mcp-java-preview-and-approval-outbox-rabbitmq-refund"
+            report["stages"].append("real-business-tempo-readback")
         code = 0
     except (StageError, ValueError, OSError, KeyError, TypeError, ev.ET.ParseError) as exc:
         # Fixed class/stage names only. Never dump a provider response, token or SQL result.
@@ -182,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["run", "cleanup"])
     parser.add_argument("--state", type=Path, default=ROOT / ".local/business-e2e")
+    parser.add_argument("--tracing", action="store_true", help="require real business trace readback from an isolated Collector/Tempo")
     args = parser.parse_args(argv)
     state = args.state.absolute()
     try:
@@ -191,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             cleanup(state)
             return 0
-        return run(state)
+        return run(state, tracing=args.tracing)
     except (OSError, ValueError, StageError, KeyError, TypeError) as exc:
         print("business-e2e refused: " + type(exc).__name__, file=sys.stderr)
         return 2

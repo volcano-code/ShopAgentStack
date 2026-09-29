@@ -4,6 +4,10 @@
   <artifactId>shop-agent-stack-after-sale</artifactId>
   <description>Independent ShopAgentStack after-sale domain and policy persistence</description>
   <dependencies>
+    <!-- M1.3b: SDK versions are managed by the existing Spring Boot parent. -->
+    <dependency><groupId>io.opentelemetry</groupId><artifactId>opentelemetry-sdk</artifactId></dependency>
+    <dependency><groupId>io.opentelemetry</groupId><artifactId>opentelemetry-exporter-otlp</artifactId></dependency>
+    <dependency><groupId>io.opentelemetry</groupId><artifactId>opentelemetry-sdk-testing</artifactId><scope>test</scope></dependency>
     <dependency><groupId>com.macro.mall</groupId><artifactId>mall-common</artifactId><version>1.0-SNAPSHOT</version></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-jdbc</artifactId></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-amqp</artifactId></dependency>

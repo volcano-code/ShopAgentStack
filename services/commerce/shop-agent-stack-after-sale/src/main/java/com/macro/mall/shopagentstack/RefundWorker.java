@@ -23,6 +23,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 @EnableScheduling
 @ConditionalOnProperty(name="shop_agent_stack.refund.enabled",havingValue="true")
 public class RefundWorker {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private CommerceTracing tracing=CommerceTracing.disabled();
     public static final String QUEUE="shop_agent_stack.refunds.v1";
     private final JdbcTemplate db;
     private final RefundService refunds;
@@ -42,34 +44,46 @@ public class RefundWorker {
             if(((Number)row.get("attempts")).intValue()>=20) { refunds.exhaust(id); continue; }
             // CAS lease: a competing dispatcher or crash can cause duplicates, never missing intent.
             if(db.update("UPDATE shop_agent_stack_refund_job SET attempts=attempts+1,next_attempt_at=TIMESTAMPADD(SECOND,30,NOW()) WHERE case_id=? AND status='PENDING' AND next_attempt_at<=NOW() AND attempts<20",id)!=1) continue;
-            try {
+            try(var operation=tracing.start("refund.publish",io.opentelemetry.api.trace.SpanKind.PRODUCER,tracing.intentParent(db,id))) {
+              try {
                 var properties=new MessageProperties(); properties.setDeliveryMode(MessageDeliveryMode.PERSISTENT);
                 properties.setMessageId("refund:"+id); properties.setContentType("text/plain");
+                String traceparent=tracing.currentParent();
+                if(traceparent!=null) properties.setHeader("traceparent",traceparent);
                 var correlation=new CorrelationData(UUID.randomUUID().toString());
                 rabbit.send("",QUEUE,new Message(Long.toString(id).getBytes(StandardCharsets.UTF_8),properties),correlation);
                 if(!correlation.getFuture().get(5,TimeUnit.SECONDS).isAck() || correlation.getReturned()!=null) throw new IllegalStateException("Publish not confirmed");
                 // A broker ACK must not erase a prior business-consumer failure.
-            } catch(Exception error) {
+              } catch(Exception error) {
+                operation.failed();
                 if(error instanceof InterruptedException) Thread.currentThread().interrupt();
                 db.update("UPDATE shop_agent_stack_refund_job SET last_error='PUBLISH_UNCONFIRMED' WHERE case_id=? AND status='PENDING'",id);
+              }
             }
         }
     }
     @RabbitListener(queues=QUEUE,concurrency="1",ackMode="AUTO")
     public void consume(Message message) {
         Long id=null;
-        try {
+        try(var operation=tracing.start("refund.consume",io.opentelemetry.api.trace.SpanKind.CONSUMER,
+                tracing.enabled()?CommerceTracing.parent(message.getMessageProperties().getHeaders().get("traceparent")):io.opentelemetry.context.Context.root())) {
+          try {
             String body=new String(message.getBody(),StandardCharsets.UTF_8);
             if(!body.matches("[1-9][0-9]{0,17}")) throw new IllegalArgumentException("Invalid refund ID");
             id=Long.parseLong(body);
-            refunds.complete(id); // Transaction proxy commits before listener ACK.
-        } catch(Exception error) {
+            try(var transaction=tracing.start("db.refund.transaction",io.opentelemetry.api.trace.SpanKind.INTERNAL,io.opentelemetry.context.Context.current())) {
+                try{refunds.complete(id);} // The real Spring transaction proxy commits before returning.
+                catch(Exception error){transaction.failed();throw error;}
+            }
+          } catch(Exception error) {
+            operation.failed();
             if(id!=null) {
                 try { refunds.recordFailure(id,error instanceof IllegalStateException?"BUSINESS_STATE_CONFLICT":"CONSUMER_FAILURE"); }
                 catch(Exception ignored) { /* DB outage must not turn a failed delivery into an ACK. */ }
             }
             // Park the failed delivery; persistent DB intent drives bounded delayed retries.
             throw new AmqpRejectAndDontRequeueException("Refund not applied; outbox will retry",error);
+          }
         }
     }
 }

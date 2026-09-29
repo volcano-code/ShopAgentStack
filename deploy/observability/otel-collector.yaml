@@ -22,7 +22,7 @@ processors:
       - keep_keys(span.attributes, ["http.request.method", "http.response.status_code", "shop.tool.name", "shop.run.status", "shop.failure.category", "shop.provider.fixture", "gen_ai.provider.name", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens"])
       - set(span.status.message, "")
       - set(span.trace_state, "")
-      - 'set(span.name, "redacted.operation") where not IsMatch(span.name, "^(agent.run|llm.call|tool.call|mcp.request|commerce.call|http.request|retrieval.search|source.validate)$")'
+      - 'set(span.name, "redacted.operation") where not IsMatch(span.name, "^(agent.run|llm.call|tool.call|mcp.request|commerce.call|commerce.request|refund.publish|refund.consume|db.refund.transaction|http.request|retrieval.search|source.validate)$")'
   filter/drop_events:
     error_mode: propagate
     traces:

@@ -79,7 +79,9 @@ test("M13 browser confirmation to staff refund and replay", async ({ page, reque
   await loginUi(page, "/app/assistant", user);
   await expect(page.getByLabel("选择模型服务")).toHaveValue("fixture");
   await page.getByLabel("发送给购物助手").fill(`申请售后，订单 ${oid}，原因：${reason}`);
+  const runResponse = page.waitForResponse(r => r.request().method() === "POST" && /\/api\/agent\/sessions\/[^/]+\/runs$/.test(r.url()));
   await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  const agentTrace = (await runResponse).headers()["x-trace-id"];
   await expect(page.getByRole("button", { name: "确认提交售后" })).toBeVisible();
   const sid = await page.evaluate(() => sessionStorage.getItem("shop_agent_stack_session"));
   expect(sid).toBeTruthy();
@@ -116,7 +118,15 @@ test("M13 browser confirmation to staff refund and replay", async ({ page, reque
     await staffPage.getByRole("button").filter({ has: staffPage.getByRole("heading", { name: reason }) }).click();
     await staffPage.getByRole("button", { name: "领取并人工处理" }).click();
     await staffPage.getByLabel("审核说明").fill("隔离测试：已人工核对，仅模拟退款。");
+    const approvalResponse = staffPage.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith(`/after-sales/${cid}/decision`));
     await staffPage.getByRole("button", { name: "通过并模拟退款" }).click();
+    const approvalTrace = (await approvalResponse).headers()["x-trace-id"];
+    if (process.env.SHOP_E2E_TRACING === "true") {
+      expect(agentTrace).toMatch(/^[0-9a-f]{32}$/);
+      expect(approvalTrace).toMatch(/^[0-9a-f]{32}$/);
+      expect(agentTrace).not.toBe(approvalTrace); // Human approval is a separate request, not invented causality.
+      writeFileSync(resolve(state, "receipts", "traces.json"), JSON.stringify({ agent: agentTrace, approval: approvalTrace }), { flag: "wx", mode: 0o600 });
+    }
     await expect(staffPage.getByRole("dialog").getByText("模拟退款完成", { exact: true })).toBeVisible({ timeout: 60_000 });
     await staffPage.screenshot({ path: resolve(state, "artifacts", "staff-refunded.png"), fullPage: true });
     const login = await ok(request, "admin", "/admin/login", "", { username: staff.username, password: staff.password });

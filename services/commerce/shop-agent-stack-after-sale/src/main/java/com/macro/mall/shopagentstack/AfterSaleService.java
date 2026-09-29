@@ -11,6 +11,8 @@ import java.util.Map;
 /** Original ShopAgentStack domain. Approval and refund outbox are committed atomically. */
 @Service
 public class AfterSaleService {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private CommerceTracing tracing=CommerceTracing.disabled();
     private final JdbcTemplate db;
     public AfterSaleService(JdbcTemplate db) { this.db = db; }
 
@@ -72,6 +74,7 @@ public class AfterSaleService {
         if(approved) {
             db.update("UPDATE shop_agent_stack_after_sale SET status='REFUNDING',decision_note=? WHERE id=?",note.trim(),id);
             db.update("INSERT INTO shop_agent_stack_refund_job(case_id) VALUES(?)",id);
+            tracing.captureIntent(db,id); // Optional diagnostic sidecar; not a business status or authority.
             event(id,"staff:"+staffId,"APPROVED",note.trim());
         } else {
             db.update("UPDATE shop_agent_stack_after_sale SET status='REJECTED',decision_note=? WHERE id=?",note.trim(),id);
