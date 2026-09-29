@@ -105,3 +105,14 @@ def test_traced_workflow_runs_new_java_tests_and_actual_readback():
     text='\n'.join(text)
     assert 'CommerceTracingTest' in text and 'tools.shop_e2e run --tracing' in text
     assert 'secrets.' not in text and '|| true' not in text
+
+
+def test_preflight_java_artifacts_cannot_dirty_source_checkout():
+    w=yaml.load((ROOT/'.github/workflows/business-tracing-e2e.yml').read_text(),Loader=yaml.BaseLoader)
+    steps=w['jobs']['business']['steps']
+    record=next(s['run'] for s in steps if s.get('name')=='Require executed Java tracing tests')
+    assert 'tee .local/java-tracing/tests.json' in record
+    upload=next(s for s in steps if s.get('with',{}).get('name')=='java-tracing-tests')
+    assert upload['with']['path']=='.local/java-tracing/'
+    result=subprocess.run(['git','check-ignore','--no-index','-q','.local/java-tracing/tests.json'],cwd=ROOT)
+    assert result.returncode==0
