@@ -5,7 +5,7 @@ Java 发布权限、政策有效性、最终源核对与模型工具白名单保
 
 ## 范围
 
-在 M1.3a 的独立 Docker 项目中增加 Milvus / etcd / MinIO 与单实例索引 worker。
+在 M1.3a 的独立 Docker 项目中增加 Milvus 原生单机服务（内嵌 etcd、本地持久化）与单实例索引 worker。
 使用 `evaluation/retrieval-matrix.json` 中已有的固定提交：BGE-small-zh-v1.5
 与 BGE-reranker-base，在 CPU 上实际运行 embedding、Milvus dense search、BM25、
 RRF 和 cross-encoder rerank。不使用 hash embedding、不模拟向量数据库、不替换排名。
@@ -22,9 +22,9 @@ RRF 和 cross-encoder rerank。不使用 hash embedding、不模拟向量数据�
 不是付费 LLM 调用。下载失败直接失败，不偷换成 fixture。
 
 worker 在 business 内部网络中运行，`HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`，
-缓存只读。Milvus/etcd/MinIO/worker 不发布宿主端口，不复用展示栈网络、集合或数据卷。
+缓存只读。Milvus/worker 不发布宿主端口，不复用展示栈网络、集合或数据卷。
 唯一的宿主业务端口仍是随机 loopback Web 端口。prefetch 与 Web 的 edge 网络有出站能力，
-不声称整个 Docker 栈完全无外网。镜像版本沿用原项目，验收记录实际镜像 ID。
+不声称整个 Docker 栈完全无外网。Milvus 版本沿用原项目，验收记录实际镜像 ID 与存储配置哈希。
 
 ## 六个必需阶段
 
@@ -65,14 +65,21 @@ hash 和合成截图；中间 bearer、索引密钥、原始 HTTP 响应和模�
 `hybrid-progress.json` 保留已完成阶段，`evidence.json` 同时要求检索、业务和清理通过。
 本文件说明实现契约，不预先宣称任何提交的 CI 已通过。
 
-## 镜像来源修复
+## 基础设施调整与验收边界
 
-两次实际托管运行分别发现 Docker Hub 的原 MinIO 引用不可拉取，以及 Quay 的
-`RELEASE.2024-12-18T13-15-44Z` 返回未授权。这里没有索取用户凭据或静默换镜像。
-隔离栈显式改用 MinIO 自有 Quay 仓库的 `RELEASE.2025-09-07T16-13-09Z`，固定
-manifest `sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e`。
-这是明确的测试基础设施版本变更，不再声称只是切换仓库而版本不变。
-CI 在昂贵的模型准备之前单独拉取该固定镜像，失败即停止；兼容性仍须真实集成验收。
-此历史镜像仅用于无公网端口的临时测试，不能视为当前安全受支持的生产选型。
-来源核查：MinIO 官方容器说明使用 Quay；Apache Gravitino 的 issue #13111 记录了
-同类拉取故障及这个公开版本的迁移。两次失败的工作流及其成功清理证据均保留。
+三次托管尝试分别保留了 Docker Hub 原 MinIO 引用、Quay 原标签和 Quay 2025 固定
+manifest 的拉取失败。这里没有索取用户凭据、不断尝试第三方镜像，或跳过 Milvus。
+当前隔离栈采用 Milvus 官方支持的 **Standalone 原生本地持久化**：真实 `milvusdb/milvus:v2.6.15`
+容器、内嵌 etcd、Woodpecker local WAL，以及本次独立数据卷。不是 Milvus Lite、
+内存替身或模拟 S3。所有六个检索阶段、真实向量查询及数据库回读门禁保持不变。
+
+固定源码参考：`milvus-io/milvus` 的 `v2.6.15/scripts/standalone_embed.sh` 中
+COMMON_STORAGETYPE/ETCD_USE_EMBED/DEPLOY_MODE，以及同版本 `configs/milvus.yaml`
+的 Woodpecker local 设置。只使用配置接口，不执行下载的上游脚本、不关闭 seccomp。
+索引 worker 与业务服务仍是独立容器，MCP 仍调用原 worker，worker 通过原有 gRPC 路径查询 Milvus。
+
+报告显式设置 `storage_backend=milvus-native-local-woodpecker` 和
+`external_object_store_verified=false`。**本轮不证明 MinIO/S3、对象存储故障恢复、分布式
+Milvus 或原展示环境的外部对象存储部署可用。** 原 `deploy/compose.retrieval.yml` 不变，
+其 MinIO 引用仍需在单独迁移中处理；不要把隔离模式的成功视为该旧入口通过。
+CI 在昂贵准备之前检查真实 Milvus 镜像，启动及模型失败均不会变成跳过或伪通过。

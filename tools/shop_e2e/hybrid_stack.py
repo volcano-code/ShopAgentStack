@@ -18,16 +18,15 @@ def add_hybrid(root: Path, state: Path, project: str, services: dict, bind) -> l
         "volumes": [*common_mounts, models + ":/models"],
         "networks": ["edge"], "mem_limit": "1g",
     }
-    services["etcd"] = {"image": "quay.io/coreos/etcd:v3.5.18",
-        "command": ["etcd", "--advertise-client-urls=http://etcd:2379", "--listen-client-urls=http://0.0.0.0:2379", "--data-dir=/etcd"],
-        "environment": {"ETCD_AUTO_COMPACTION_MODE": "revision", "ETCD_AUTO_COMPACTION_RETENTION": "1000"},
-        "volumes": ["hybrid_etcd:/etcd"], "mem_limit": "256m"}
-    services["minio"] = {"image": "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
-        "command": ["minio", "server", "/data"], "volumes": ["hybrid_minio:/data"], "mem_limit": "512m"}
+    # Native Milvus standalone storage, not Milvus Lite or a simulated S3 server.
     services["milvus"] = {"image": "milvusdb/milvus:v2.6.15",
         "command": ["milvus", "run", "standalone"],
-        "environment": {"ETCD_ENDPOINTS": "etcd:2379", "MINIO_ADDRESS": "minio:9000"},
-        "volumes": ["hybrid_milvus:/var/lib/milvus"], "depends_on": ["etcd", "minio"],
+        "environment": {"DEPLOY_MODE": "STANDALONE", "ETCD_USE_EMBED": "true",
+                        "ETCD_DATA_DIR": "/var/lib/milvus/etcd", "ETCD_CONFIG_PATH": "/milvus/configs/embedEtcd.yaml",
+                        "COMMON_STORAGETYPE": "local"},
+        "volumes": ["hybrid_milvus:/var/lib/milvus",
+                    bind(root / "deploy/retrieval/embed-etcd-e2e.yaml", "/milvus/configs/embedEtcd.yaml"),
+                    bind(root / "deploy/retrieval/milvus-e2e.yaml", "/milvus/configs/user.yaml")],
         "healthcheck": {"test": ["CMD", "curl", "-f", "http://localhost:9091/healthz"], "interval": "5s", "timeout": "3s", "retries": 60},
         "mem_limit": "2g"}
     services["retrieval-worker"] = {
@@ -46,4 +45,4 @@ def add_hybrid(root: Path, state: Path, project: str, services: dict, bind) -> l
     services["agent"]["volumes"].extend([
         bind(root / "tools/shop_e2e", "/opt/shop_e2e"),
         bind(state / "accounts.json", "/run/secrets/test_accounts")])
-    return [models, "hybrid_etcd", "hybrid_minio", "hybrid_milvus"]
+    return [models, "hybrid_milvus"]

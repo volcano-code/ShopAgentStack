@@ -129,7 +129,7 @@ def test_hybrid_stack_has_no_foreign_volume_or_online_worker():
     assert "depends_on" not in services["model-prefetch"]
     assert all("secret" not in str(v) for v in services["model-prefetch"]["volumes"])
     assert "retrieval" in services["model-prefetch"]["build"]["context"]
-    for name in ("milvus", "etcd", "minio", "retrieval-worker"):
+    for name in ("milvus", "retrieval-worker"):
         assert "ports" not in services[name] and services[name]["networks"] == ["business"]
         assert services[name]["labels"] == {stack.LABEL: P}
     worker = services["retrieval-worker"]

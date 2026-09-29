@@ -121,6 +121,8 @@ def run(state: Path, *, tracing: bool = False, hybrid: bool = False) -> int:
         report["scope"] = "M1.3b-isolated-synthetic-business-tracing"
     if hybrid:
         report["scope"] = "M1.3c-isolated-business-and-real-hybrid-lifecycle"
+        report["storage_backend"] = "milvus-native-local-woodpecker"
+        report["external_object_store_verified"] = False
     code = 1
     try:
         # This fails instead of adopting another stack, even in the astronomically unlikely collision.
@@ -140,7 +142,7 @@ def run(state: Path, *, tracing: bool = False, hybrid: bool = False) -> int:
         if hybrid:
             command(state, "hybrid-image-build", [*base, "--profile", "prepare", "build", "model-prefetch"], timeout=1200)
             command(state, "hybrid-model-prefetch", [*base, "--profile", "prepare", "run", "--rm", "--no-deps", "model-prefetch"], timeout=900)
-            model_inputs = [ROOT / "evaluation/retrieval-matrix.json", ROOT / "services/retrieval/requirements.lock"]
+            model_inputs = [ROOT / "evaluation/retrieval-matrix.json", ROOT / "services/retrieval/requirements.lock", *sorted((ROOT / "deploy/retrieval").glob("*-e2e.yaml"))]
             report["input_sha256"].update({str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in model_inputs})
         command(state, "startup", [*base, "up", "-d", "--wait", "--wait-timeout", "240"], timeout=600)
         report["stages"].append("healthy-business-stack")
@@ -191,7 +193,7 @@ def run(state: Path, *, tracing: bool = False, hybrid: bool = False) -> int:
                 details += "\n" + log.read_text()[-12000:]
         (state / "artifacts" / "failure-excerpt.txt").write_text(redact(state, details), encoding="utf-8")
         try:
-            service_log = command(state, "failure-services", [*base, "logs", "--no-color", "--tail", "20", *(["portal", "admin", "mysql", "agent", "commerce-mcp"] + (["retrieval-worker", "milvus", "etcd", "minio"] if hybrid else []))], timeout=30)
+            service_log = command(state, "failure-services", [*base, "logs", "--no-color", "--tail", "20", *(["portal", "admin", "mysql", "agent", "commerce-mcp"] + (["retrieval-worker", "milvus"] if hybrid else []))], timeout=30)
             (state / "artifacts" / "service-excerpt.txt").write_text(redact(state, service_log), encoding="utf-8")
         except (StageError, OSError):
             pass
