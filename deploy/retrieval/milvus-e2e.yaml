@@ -1,0 +1,9 @@
+# Explicit native Standalone storage. This is not an S3/MinIO acceptance profile.
+common:
+  storageType: local
+mq:
+  type: woodpecker
+woodpecker:
+  storage:
+    type: local
+    rootPath: /var/lib/milvus/woodpecker

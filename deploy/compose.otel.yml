@@ -1,0 +1,33 @@
+# Append this to the existing commerce Compose file list (after compose.p2.yml).
+# Start deploy/observability/compose.yaml separately first. Never expose MCP publicly.
+services:
+  agent:
+    image: shop_agent_stack-agent:m12-otel
+    build:
+      context: ../services/agent
+      args:
+        SHOP_AGENT_STACK_WITH_OTEL: 'true'
+    environment:
+      SHOP_AGENT_STACK_OTEL_ENABLED: 'true'
+      SHOP_AGENT_STACK_OTEL_EXPORTER: otlp
+      SHOP_AGENT_STACK_OTEL_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      SHOP_AGENT_STACK_OTEL_SAMPLE_RATIO: '0.1'
+    networks: [default, shop-observability]
+  commerce-mcp:
+    image: shop_agent_stack-agent:m12-otel
+    build:
+      context: ../services/agent
+      args:
+        SHOP_AGENT_STACK_WITH_OTEL: 'true'
+    command: ['uvicorn', 'shop_agent_stack.mcp_observed:app', '--host', '0.0.0.0', '--port', '8011', '--no-access-log']
+    environment:
+      SHOP_AGENT_STACK_OTEL_ENABLED: 'true'
+      SHOP_AGENT_STACK_OTEL_EXPORTER: otlp
+      SHOP_AGENT_STACK_OTEL_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      SHOP_AGENT_STACK_OTEL_SAMPLE_RATIO: '0.1'
+      SHOP_AGENT_STACK_OTEL_TRUST_INTERNAL: 'true'
+    networks: [default, shop-observability]
+networks:
+  shop-observability:
+    external: true
+    name: ${SHOP_OBS_NETWORK:-shop-observability_default}

@@ -1,0 +1,1 @@
+{"case_id": "case-1", "split": "heldout", "qrels": {"P1V1C1": 3}, "expected_citation_ids": ["P1V1C1"], "allowed_tools": ["search_policies"], "expected_tools": ["search_policies"], "should_abstain": false, "check_write_safety": false}

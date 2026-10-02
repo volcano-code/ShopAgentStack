@@ -1,0 +1,11 @@
+# Optional tracing dependencies. Install together with requirements.lock.
+# Existing requirements.lock remains unchanged; pip must resolve both without conflicts.
+# Versions exercised locally, not a claim of newest releases.
+opentelemetry-api==1.42.1
+opentelemetry-sdk==1.42.1
+opentelemetry-semantic-conventions==0.63b1
+opentelemetry-exporter-otlp-proto-http==1.42.1
+opentelemetry-exporter-otlp-proto-common==1.42.1
+opentelemetry-proto==1.42.1
+googleapis-common-protos==1.75.0
+protobuf==6.33.6

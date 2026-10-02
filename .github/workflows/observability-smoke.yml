@@ -1,0 +1,65 @@
+# Synthetic transport validation for relevant PRs and manual runs. NOT a full commerce/LLM E2E job.
+name: Observability transport smoke
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/observability-smoke.yml'
+      - 'deploy/observability/**'
+      - 'tools/shop_observability/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: shop-obs-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  collector-tempo:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      COMPOSE_PROJECT_NAME: shopobs-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_FILE: deploy/observability/compose.yaml
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Record exact checkout, workflow, and diagnostic configuration
+        run: |
+          mkdir -p artifacts/observability
+          git rev-parse HEAD HEAD^{tree} > artifacts/observability/source.txt
+          git ls-files -s -- .github/workflows/observability-smoke.yml deploy/observability/compose.yaml deploy/observability/otel-collector.yaml deploy/observability/tempo.yaml >> artifacts/observability/source.txt
+          cat artifacts/observability/source.txt
+      - name: Private local configuration and parse check (do not print resolved secrets)
+        run: |
+          mkdir -p artifacts/observability
+          python -m tools.shop_observability.local_env
+          docker compose --env-file deploy/observability/.env config --quiet
+          docker compose --env-file deploy/observability/.env run --rm --no-deps otel-collector validate --config=/etc/otelcol/config.yaml
+      - name: Start actual Collector, Tempo, and Grafana
+        run: docker compose --env-file deploy/observability/.env up -d
+      - name: Check loopback health within one deadline, without proxy or redirects
+        run: python -m tools.shop_observability.wait_ready --timeout 120 --out artifacts/observability/health.json
+      - name: Send OTLP then prove backend readback and privacy filtering
+        run: python -m tools.shop_observability.collector_smoke --out artifacts/observability/smoke.json
+      - name: Retain safe diagnostics only
+        if: always()
+        run: |
+          docker compose --env-file deploy/observability/.env ps --all > artifacts/observability/compose-ps.txt
+          docker compose --env-file deploy/observability/.env images --format json > artifacts/observability/images.json
+          docker compose --env-file deploy/observability/.env logs --no-color otel-collector tempo > artifacts/observability/services.log
+      - name: Remove only this run's isolated stack
+        if: always()
+        run: docker compose --env-file deploy/observability/.env down --remove-orphans
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: observability-smoke
+          path: artifacts/observability/
+          retention-days: 7
+          if-no-files-found: error
