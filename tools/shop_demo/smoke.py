@@ -37,10 +37,27 @@ def expect(condition: bool, stage: str):
         raise runtime.DemoError(stage)
 
 
-def business(url, path, **kwargs):
+def business(url, path, *, allow_empty=False, **kwargs):
     status, body = request(url, path, **kwargs)
-    expect(status == 200 and body.get("code") == 200, "business request rejected")
-    return body["data"]
+    expect(status == 200 and isinstance(body, dict) and body.get("code") == 200,
+           "business request rejected")
+    # Java registration returns CommonResult.success(null); NON_NULL serialization
+    # omits data. Only this explicit mutation may omit a payload, never reads/login.
+    expect(allow_empty or body.get("data") is not None, "business response data missing")
+    return body.get("data")
+
+
+def failure_locations(error: Exception) -> list[dict]:
+    """Keep repository frame locations, never locals, source lines or exception values."""
+    result = []
+    frame = error.__traceback__
+    while frame is not None:
+        path = Path(frame.tb_frame.f_code.co_filename).resolve()
+        if path.is_relative_to(ROOT.resolve()):
+            result.append({"file": path.relative_to(ROOT.resolve()).as_posix(),
+                           "function": frame.tb_frame.f_code.co_name, "line": frame.tb_lineno})
+        frame = frame.tb_next
+    return result[-5:]
 
 
 def agent(url, path, bearer, **kwargs):
@@ -88,7 +105,7 @@ def run(retrieval: str, output: Path) -> int:
         user = {"username": "demo_" + uuid4().hex[:12], "password": uuid4().hex + "Aa9!"}
         telephone = "000" + str(secrets.randbelow(10**8)).zfill(8)
         otp = business(url, "/api/portal/sso/getAuthCode?telephone=" + telephone)
-        business(url, "/api/portal/sso/register", data={**user, "telephone": telephone, "authCode": otp}, form=True)
+        business(url, "/api/portal/sso/register", data={**user, "telephone": telephone, "authCode": otp}, form=True, allow_empty=True)
         login = business(url, "/api/portal/sso/login", data=user, form=True)
         token = login["tokenHead"] + login["token"]
         providers = agent(url, "/providers", token)
@@ -135,6 +152,7 @@ def run(retrieval: str, output: Path) -> int:
     except Exception as exc:
         report["status"] = "failed"
         report["failure_type"] = type(exc).__name__
+        report["failure_locations"] = failure_locations(exc)
         if isinstance(exc, runtime.DemoError):
             report["failure_stage"] = str(exc)  # controlled stage names, not service payloads
         from tools.shop_e2e.__main__ import redact
