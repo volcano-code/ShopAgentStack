@@ -36,7 +36,17 @@ def validate_state(root: Path, state: Path) -> Path:
 def compose(root: Path, state: Path, project: str, *, tracing: bool = False, hybrid: bool = False) -> dict:
     if not PROJECT.fullmatch(project):
         raise ValueError("invalid isolated project")
-    label = {LABEL: project}
+    return service_layout(root, state, project, label={LABEL: project},
+                          test_mode=True, tracing=tracing, hybrid=hybrid)
+
+
+def service_layout(root: Path, state: Path, project: str, *, label: dict[str, str],
+                   test_mode: bool, tracing: bool = False, hybrid: bool = False) -> dict:
+    """Shared service wiring, not lifecycle ownership. Callers validate their namespace.
+
+    Production/demo callers must explicitly choose test_mode=False. The E2E wrapper
+    above preserves its existing configuration and exclusive disposable ownership.
+    """
     def bind(source: Path, target: str) -> dict:
         return {"type": "bind", "source": str(source), "target": target,
                 "read_only": True, "bind": {"create_host_path": False}}
@@ -82,7 +92,7 @@ def compose(root: Path, state: Path, project: str, *, tracing: bool = False, hyb
         "healthcheck": health(["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',8011),2).close()"]),
     }
     services["agent"] = {"image": image,
-        "environment": {"SHOP_AGENT_STACK_PORTAL_URL": "http://portal:8085", "SHOP_AGENT_STACK_MCP_URL": "http://commerce-mcp:8011/mcp", "SHOP_AGENT_STACK_ENABLE_TEST_PROVIDER": "true"},
+        "environment": {"SHOP_AGENT_STACK_PORTAL_URL": "http://portal:8085", "SHOP_AGENT_STACK_MCP_URL": "http://commerce-mcp:8011/mcp", "SHOP_AGENT_STACK_ENABLE_TEST_PROVIDER": str(test_mode).lower()},
         "volumes": ["agent_data:/data", bind(state / "agent-key", "/run/secrets/agent_key")],
         "depends_on": {"commerce-mcp": {"condition": "service_healthy"}},
         "healthcheck": health(["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health',timeout=2)"])}
@@ -97,7 +107,7 @@ def compose(root: Path, state: Path, project: str, *, tracing: bool = False, hyb
     extra_volumes = []
     if hybrid:
         from .hybrid_stack import add_hybrid
-        extra_volumes = add_hybrid(root, state, project, services, bind)
+        extra_volumes = add_hybrid(root, state, project, services, bind, probe_mounts=test_mode)
     for name, service in services.items():
         service.setdefault("networks", ["business"])
         service["labels"] = label.copy()

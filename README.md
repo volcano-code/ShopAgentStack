@@ -63,7 +63,7 @@ Java 持有业务规则与权威数据，Python 处理模型编排与检索，Ty
 
 [![客户商品目录](docs/assets/screenshots/customer-storefront.png)](docs/assets/screenshots/customer-storefront.png)
 
-**商品问答** — 按预算查询商品，展示规格与商品依据。
+**商品问答** — 按预算查询商品，展示规格说明与商品依据。
 
 [![商品问答与依据卡片](docs/assets/screenshots/customer-agent.png)](docs/assets/screenshots/customer-agent.png)
 
@@ -166,27 +166,29 @@ FastAPI 接收会话请求，LangGraph 组织有界工具循环，自建 MCP 连
 
 ## 快速开始
 
-开发工作流：**Windows + PowerShell 7 + Docker Desktop Linux 容器 + Node.js 24**。Java/Maven、Python 与检索模型在容器中运行。
+新增的[持久化本地演示开发入口](docs/local-demo-m14.md)（本版本仍需完成真实 Docker 启动验收）：Linux、Python 3.12+、本机 Docker/Compose、JDK 17/Maven 与 Node.js 24。
 
-```powershell
-git clone https://github.com/GRIZ200005/shop-agent-stack.git shop-agent-stack
-Set-Location shop-agent-stack
-
-# 准备检索镜像与固定版本模型缓存
-docker compose -f deploy/compose.retrieval.yml build evaluation
-docker compose -f deploy/compose.retrieval.yml run --rm --no-deps evaluation python scripts/prepare-retrieval-models.py
-
-# 构建应用、执行迁移并启动服务
-./scripts/start-p2.ps1 -Build
-
-# 导入原创合成商品与发布服务政策
-node scripts/import-product-catalog.mjs --apply
-node scripts/import-policy-library.mjs --publish
+```bash
+# 本仓库的累积开发暂在此分支，main 尚未合并
+git clone --branch feat/m1.2-integration https://github.com/volcano-code/ShopAgentStack.git
+cd ShopAgentStack
+python -m tools.shop_demo build
+python -m tools.shop_demo init --retrieval bm25
+python -m tools.shop_demo up
 ```
 
-打开 **[http://127.0.0.1:18030](http://127.0.0.1:18030)**。客户可以注册；客服与管理员使用本机初始化账户。AI 连接在客户空间的“模型设置”中配置，不需要把 Key 写入源码。
+打开 `http://127.0.0.1:18030`。客户自行注册；客服/管理员初始账户只保存在本机
+`.local/demo/accounts.json`。默认不启用 fixture，不配置或调用真实模型，也不开启 Agent 模型出站网络。
+基础种子数据不等于自动导入全部商品/政策库。真实模型网络、显式非 AI 演示模式与
+原生 Milvus hybrid 的选择见[本地演示指南](docs/local-demo-m14.md)。
 
-首次运行的依赖顺序、失败处理、账户位置与数据冲突处理见[安装指南](docs/getting-started.md)。启动脚本保留现有卷；默认 Compose 仅绑定本机入口。
+```bash
+python -m tools.shop_demo status
+python -m tools.shop_demo stop  # 保留数据，下一次 up 复用
+```
+
+该入口不接管旧环境或迁移旧卷。历史 PowerShell/MinIO 路径保留在[原安装指南](docs/getting-started.md)，
+不应将隔离 E2E 通过误认为旧 MinIO 镜像或旧普通启动入口已验证。
 
 ## 数据与验证
 
@@ -215,6 +217,7 @@ docs/                  架构、API、运维、测试与展示
 ```
 
 [工程实现与归属](docs/engineering-guide.md) · [代码结构与维护](docs/maintainability.md) · [API 导航](docs/api.md) · [运维指南](docs/operations.md)
+
 
 ## 适用范围
 

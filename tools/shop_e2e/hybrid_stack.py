@@ -2,7 +2,7 @@
 from pathlib import Path
 
 
-def add_hybrid(root: Path, state: Path, project: str, services: dict, bind) -> list[str]:
+def add_hybrid(root: Path, state: Path, project: str, services: dict, bind, *, probe_mounts: bool = True) -> list[str]:
     models = "hybrid_models"
     retrieval_image = project + "-retrieval:local"
     common_mounts = [bind(root / "services/retrieval", "/workspace/services/retrieval"),
@@ -42,7 +42,8 @@ def add_hybrid(root: Path, state: Path, project: str, services: dict, bind) -> l
         services[name].setdefault("volumes", []).append(bind(state / "index-key", "/run/secrets/index_key"))
     services["commerce-mcp"]["environment"]["SHOP_AGENT_STACK_RETRIEVAL_MODE"] = "hybrid"
     # Explicit test executable and per-run accounts. No host Docker socket in any service.
-    services["agent"]["volumes"].extend([
-        bind(root / "tools/shop_e2e", "/opt/shop_e2e"),
-        bind(state / "accounts.json", "/run/secrets/test_accounts")])
+    if probe_mounts:
+        services["agent"]["volumes"].extend([
+            bind(root / "tools/shop_e2e", "/opt/shop_e2e"),
+            bind(state / "accounts.json", "/run/secrets/test_accounts")])
     return [models, "hybrid_milvus"]

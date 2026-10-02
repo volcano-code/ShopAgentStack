@@ -1,5 +1,9 @@
 # 安装与首次运行
 
+> 新的 Linux 本地演示优先使用 [M1.4a 持久化入口](local-demo-m14.md)。以下保留历史
+> PowerShell/MinIO 安装流程；旧 MinIO 镜像可用性尚未恢复验收，不要对新 demo 直接运行旧迁移或导入脚本。
+
+
 [文档首页](README.md) · [运维排障](operations.md)
 
 本文说明 Windows、PowerShell 7 与 Docker Desktop Linux 容器环境下的依赖、构建和初始化顺序。
