@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 import socket
+import re
 import subprocess
 import urllib.request
 from uuid import uuid4
@@ -12,6 +13,12 @@ from uuid import uuid4
 from . import runtime, seed
 from .smoke import business, expect, failure_locations, request
 from .state import ROOT, init, sha, write_private
+
+
+def java_failure_locations(text: str) -> list[str]:
+    """Only class/file/line names. Never include exception messages, SQL or values."""
+    matches = re.findall(r"\b(com\.macro\.mall[.\w$]+\([\w]+\.java:\d+\))", text)
+    return list(dict.fromkeys(matches))[:12]
 
 
 def readback(state: Path, project: str) -> dict:
@@ -106,10 +113,15 @@ def run(retrieval: str) -> int:
     except Exception as exc:
         report["failure_type"]=type(exc).__name__; report["failure_locations"]=failure_locations(exc)
         if isinstance(exc,runtime.DemoError): report["failure_stage"]=str(exc)
+        try:
+            raw = runtime.command(state, "seed-admin-diagnostics", [*runtime.base(state, owner["project"]),
+                "logs", "--no-color", "--tail", "150", "admin"], timeout=20)
+            report["java_failure_locations"] = java_failure_locations(raw)
+            report["failure_database"] = readback(state, owner["project"])
+        except Exception as diagnostic:
+            report["diagnostic_failure_type"] = type(diagnostic).__name__
         # Only bounded, redacted local diagnostics; never export plans/account files.
-        from tools.shop_e2e.__main__ import redact
-        logs=sorted((state/"logs").glob("*.log"))
-        if logs: write_private(state/"artifacts/failure-excerpt.txt",redact(state,logs[-1].read_text()[-12000:]))
+        # Server logs remain private; only the allowlisted frame names and read-only counts above are exported.
     finally:
         try: runtime.destroy(state,owner["project"]); report["cleanup_verified"]=True
         except Exception as exc: report["cleanup_failure_type"]=type(exc).__name__;report["status"]="failed";code=1

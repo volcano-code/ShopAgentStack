@@ -126,6 +126,22 @@ class DemoImportTest {
         assertThrows(RuntimeException.class,()->importer.preview(new DemoImportService.Bundle(b.sourceSha256(),b.products(),List.of(hidden)),"SEED",9));
         assertEquals(0,count("shop_agent_stack_demo_import"));
     }
+    @Test void databaseExpiryDoesNotCastMysqlDatetime() {
+        JdbcTemplate connection=mock(JdbcTemplate.class);
+        when(connection.queryForMap(anyString())).thenReturn(Map.of("id",1));
+        String id="11111111-1111-1111-1111-111111111111", confirmation="c".repeat(64);
+        when(connection.queryForList(anyString(),eq(id),eq(9L))).thenReturn(List.of(Map.of(
+                "status","PREVIEW","confirmation_hash",confirmation,"unexpired",0,
+                "expires_at",java.time.LocalDateTime.of(2099,1,1,0,0))));
+        DemoImportService direct=new DemoImportService(connection,policies,new ObjectMapper());
+        assertThrows(com.macro.mall.common.exception.ApiException.class,()->direct.apply(id,confirmation,9));
+        verify(connection,never()).update(anyString(),any(Object[].class));
+    }
+    @Test void databaseCreatesTenMinuteExpiry() {
+        var p=preview("SEED");
+        Long seconds=db.queryForObject("SELECT TIMESTAMPDIFF(SECOND,CURRENT_TIMESTAMP,expires_at) FROM shop_agent_stack_demo_import WHERE id=?",Long.class,p.get("id"));
+        assertTrue(seconds>=590 && seconds<=600);
+    }
     @Test void excessiveAndDuplicateInputsRejected() {
         var b=bundle(); assertThrows(RuntimeException.class,()->DemoImportService.validate(new DemoImportService.Bundle(b.sourceSha256(),Collections.nCopies(101,b.products().get(0)),b.policies())));
         assertThrows(RuntimeException.class,()->DemoImportService.validate(new DemoImportService.Bundle(b.sourceSha256(),b.products(),Collections.nCopies(2,b.policies().get(0)))));

@@ -44,7 +44,9 @@ class AdminAPI:
                 if response.status != 200 or len(raw) > 2 * 1024 * 1024:
                     raise ValueError("invalid import response")
                 body = json.loads(raw)
-        except (OSError, ValueError) as exc:
+        except urllib.error.HTTPError as exc:
+            raise runtime.DemoError("demo import HTTP status " + str(exc.code) + "; no automatic mutation retry") from None
+        except (OSError, ValueError):
             raise runtime.DemoError("demo import HTTP failed; no automatic mutation retry") from None
         if not isinstance(body, dict) or body.get("code") != 200 or body.get("data") is None:
             raise runtime.DemoError("demo import rejected; review the plan, expiry, role and catalog conflicts")

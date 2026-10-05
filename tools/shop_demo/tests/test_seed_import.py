@@ -189,3 +189,18 @@ def test_seed_ci_pins_and_report_gates():
     assert '--pattern "**/TEST-*DemoImportTest.xml"' in source
     assert '--pattern "**/TEST-*DemoImportAccessTest.xml"' in source
     assert '|| true' not in source and 'secrets.' not in source
+
+
+def test_java_error_locator_excludes_values_and_sql():
+    from tools.shop_demo.seed_smoke import java_failure_locations
+    text = "secret-key: private-user-value\njava.lang.ClassCastException: sensitive-message\n at com.macro.mall.shopagentstack.DemoImportService.apply(DemoImportService.java:146)\n SQL: SELECT token FROM anything"
+    assert java_failure_locations(text) == ["com.macro.mall.shopagentstack.DemoImportService.apply(DemoImportService.java:146)"]
+
+
+def test_http_error_exports_only_status_and_never_response():
+    import io
+    api=object.__new__(seed.AdminAPI);api.url='http://127.0.0.1:18030';api.token='unit-secret';api.opener=Mock()
+    api.opener.open.side_effect=urllib.error.HTTPError(api.url,500,'secret-server-message',{},io.BytesIO(b'private-response'))
+    with pytest.raises(seed.runtime.DemoError) as error:api.call(seed.ENDPOINT+'/x/apply',{})
+    assert str(error.value) == 'demo import HTTP status 500; no automatic mutation retry'
+    assert api.opener.open.call_count == 1

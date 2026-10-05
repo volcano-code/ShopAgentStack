@@ -11,8 +11,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.sql.Timestamp;
-import java.time.Instant;
 import java.util.*;
 
 /** Opt-in local demo only. Java owns every mutation; preview never publishes policies. */
@@ -127,8 +125,8 @@ public class DemoImportService {
                 "Too many outstanding demo previews");
         var expected=inspect(b,hash,action,currentSlot); String id=UUID.randomUUID().toString();
         String confirmation=digest(id+"\n"+actor+"\n"+action+"\n"+hash+"\n"+encode(expected));
-        db.update("INSERT INTO shop_agent_stack_demo_import(id,actor_id,action,bundle_hash,confirmation_hash,expected_state,payload,expires_at) VALUES(?,?,?,?,?,?,?,?)",
-                id,actor,action,hash,confirmation,encode(expected),payload,Timestamp.from(Instant.now().plusSeconds(600)));
+        db.update("INSERT INTO shop_agent_stack_demo_import(id,actor_id,action,bundle_hash,confirmation_hash,expected_state,payload,expires_at) VALUES(?,?,?,?,?,?,?,TIMESTAMPADD(SECOND,600,CURRENT_TIMESTAMP))",
+                id,actor,action,hash,confirmation,encode(expected),payload);
         return view(id,actor);
     }
     @Transactional(readOnly=true)
@@ -143,16 +141,17 @@ public class DemoImportService {
     }
     private Map<String,Object> owned(String id,long actor,boolean lock) {
         require(id!=null && id.matches("[0-9a-f-]{36}") && actor>0,"Invalid preview identity");
-        var rows=db.queryForList("SELECT * FROM shop_agent_stack_demo_import WHERE id=? AND actor_id=?"+(lock?" FOR UPDATE":""),id,actor);
+        var rows=db.queryForList("SELECT *,CASE WHEN expires_at>CURRENT_TIMESTAMP THEN 1 ELSE 0 END AS unexpired FROM shop_agent_stack_demo_import WHERE id=? AND actor_id=?"+(lock?" FOR UPDATE":""),id,actor);
         require(rows.size()==1,"Preview unavailable for this administrator"); return rows.get(0);
     }
     @Transactional
     public Map<String,Object> apply(String id, String confirmation, long actor) {
         var slot=slot(); // All importers serialize before locking a plan or business rows.
         var row=owned(id,actor,true);
+        // DB clock is authoritative; MySQL DATETIME may map to LocalDateTime, not Timestamp.
         require(confirmation!=null && confirmation.equals(row.get("confirmation_hash")),"Exact preview confirmation required");
         if ("APPLIED".equals(row.get("status"))) return map(row.get("result").toString()); // Receipt only, no repeated writes.
-        require("PREVIEW".equals(row.get("status")) && ((Timestamp)row.get("expires_at")).toInstant().isAfter(Instant.now()),"Preview expired");
+        require("PREVIEW".equals(row.get("status")) && row.get("unexpired") instanceof Number fresh && fresh.intValue()==1,"Preview expired");
         Bundle b=decode(row.get("payload").toString(),Bundle.class); validate(b);
         String hash=row.get("bundle_hash").toString(), action=row.get("action").toString();
         require(hash.equals(digest(encode(b))),"Stored payload hash mismatch");
