@@ -40,7 +40,7 @@ def no_symlinks(path: Path, boundary: Path) -> None:
 
 
 def validate_options(options: dict) -> None:
-    if set(options) != {"retrieval", "port", "fixture", "model_network"}:
+    if set(options) - {"seed_import"} != {"retrieval", "port", "fixture", "model_network"}:
         raise ValueError("unknown or missing demo options")
     if options["retrieval"] not in ("bm25", "hybrid"):
         raise ValueError("retrieval must be bm25 or hybrid")
@@ -48,6 +48,8 @@ def validate_options(options: dict) -> None:
         raise ValueError("choose a loopback port between 1024 and 65535")
     if any(type(options[k]) is not bool for k in ("fixture", "model_network")):
         raise ValueError("demo flags must be booleans")
+    if type(options.get("seed_import", False)) is not bool:
+        raise ValueError("seed_import must be a boolean")
     if options["fixture"] and options["model_network"]:
         raise ValueError("fixture and model egress are mutually exclusive")
 
@@ -61,6 +63,8 @@ def layout(state: Path, owner: dict) -> dict:
     spec = service_layout(state / "runtime", state, project, label={LABEL: project},
                           test_mode=False, hybrid=options["retrieval"] == "hybrid")
     services = spec["services"]
+    if options.get("seed_import", False):
+        services["admin"]["environment"]["SHOP_AGENT_STACK_DEMO_IMPORT_ENABLED"] = "true"
     services["web"]["ports"][0]["published"] = str(options["port"])
     services["agent"]["environment"]["SHOP_AGENT_STACK_ENABLE_TEST_PROVIDER"] = str(options["fixture"]).lower()
     services["redis"]["command"] = ["redis-server", "--appendonly", "yes"]
