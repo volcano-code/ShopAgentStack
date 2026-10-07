@@ -134,6 +134,8 @@ def up(state: Path) -> dict:
         life = _life(state)
         if life["phase"] == "destroyed":
             raise ValueError("destroyed state cannot be restarted; initialize a new state")
+        if life.get("recovery_pending"):
+            raise ValueError("incomplete restore cannot start; retain evidence and explicitly destroy only the target")
         local_engine(state)
         project = owner["project"]
         current = resources(state, project)

@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 
 from . import runtime
 from .state import ROOT, init, validate_state
@@ -31,9 +32,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_subparsers(dest="action", required=True)
     actions.add_parser("build", help="build the current checkout, not a running demo's files")
-    for action in ("init", "up", "status", "stop", "destroy", "seed-preview", "seed-apply"):
+    for action in ("init", "up", "status", "stop", "destroy", "seed-preview", "seed-apply", "backup", "backup-inspect", "restore", "backup-keygen"):
         sub = actions.add_parser(action)
         sub.add_argument("--state", type=Path, default=ROOT / ".local/demo")
+        if action in ("backup", "backup-inspect", "restore", "backup-keygen"):
+            sub.add_argument("--key-file", required=True, type=Path, help="private local 32-byte recovery key; never paste it")
+        if action == "backup":
+            sub.add_argument("--output", required=True, type=Path)
+        if action in ("backup-inspect", "restore"):
+            sub.add_argument("--archive", required=True, type=Path)
+        if action == "restore":
+            sub.add_argument("--port", required=True, type=int)
+            sub.add_argument("--confirm", required=True, help="full verified backup SHA256; target must be new")
         if action == "init":
             sub.add_argument("--retrieval", choices=("bm25", "hybrid"), default="bm25")
             sub.add_argument("--port", type=int, default=18030)
@@ -54,7 +64,17 @@ def main(argv: list[str] | None = None) -> int:
             build()
             return 0
         state = validate_state(ROOT, args.state.absolute())
-        if args.action == "init":
+        if args.action in ("backup", "backup-inspect", "restore", "backup-keygen"):
+            from . import backup
+            if args.action == "backup-keygen":
+                result = backup.crypto.keygen(backup.path_in_private_area(args.key_file))
+            elif args.action == "backup":
+                result = backup.backup(state, args.output, args.key_file)
+            elif args.action == "backup-inspect":
+                result = backup.inspect(args.archive, args.key_file)
+            else:
+                result = backup.restore(args.archive, args.key_file, state, args.port, args.confirm)
+        elif args.action == "init":
             owner = init(ROOT, state, {"retrieval": args.retrieval, "port": args.port,
                          "fixture": args.fixture, "model_network": args.allow_model_network, **({"seed_import": True} if args.enable_seed_import else {})})
             result = {"initialized": True, "project": owner["project"], "credentials_file": str(state / "accounts.json"),
@@ -68,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             result = getattr(runtime, args.action)(state)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    except (OSError, ValueError, KeyError, TypeError, runtime.DemoError, subprocess.SubprocessError) as exc:
+    except (ImportError, tarfile.TarError, OSError, ValueError, KeyError, TypeError, runtime.DemoError, subprocess.SubprocessError) as exc:
         # Error text may include no raw service response; subprocess output stays in private logs.
         print("shop-demo refused: " + type(exc).__name__ + "; inspect docs/local-demo-m14.md and private state/logs", file=sys.stderr)
         return 2

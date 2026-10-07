@@ -1,0 +1,2 @@
+# Optional cold-backup CLI dependency; reuses the established Agent version.
+cryptography==50.0.1

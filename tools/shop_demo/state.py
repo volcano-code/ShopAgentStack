@@ -79,6 +79,19 @@ def layout(state: Path, owner: dict) -> dict:
         for name in ("model-prefetch", "retrieval-worker"):
             services[name]["volumes"] = [v for v in services[name]["volumes"]
                 if not (isinstance(v, dict) and v["target"] == "/workspace/tools/shop_e2e")]
+    if "recovery" in owner:
+        recovery = owner["recovery"]
+        if (options["retrieval"] != "bm25" or options["model_network"] or
+                set(recovery) != {"images", "rabbit_hostname"} or
+                set(recovery["images"]) != set(services) or
+                not all(isinstance(v, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", v) for v in recovery["images"].values()) or
+                not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,62}", recovery["rabbit_hostname"])):
+            raise ValueError("invalid pinned cold-recovery configuration")
+        for name, image in recovery["images"].items():
+            services[name]["image"] = image
+            services[name]["pull_policy"] = "never"
+            services[name].pop("build", None)
+        services["rabbitmq"]["hostname"] = recovery["rabbit_hostname"]
     return spec
 
 
