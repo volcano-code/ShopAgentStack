@@ -35,6 +35,32 @@ def port():
         s.bind(('127.0.0.1', 0)); return s.getsockname()[1]
 
 
+
+def helper_diagnostics(states):
+    """Read only bounded, schema-checked helper diagnostics, never the raw log body."""
+    findings = []
+    for state in states:
+        paths = sorted((state / 'logs').glob('*-cold-*.log'))
+        for path in paths[-5:]:
+            if path.is_symlink() or path.stat().st_size > 8192:
+                continue
+            for line in path.read_text().splitlines():
+                try: value = json.loads(line)
+                except (ValueError, TypeError): continue
+                if not isinstance(value, dict) or value.get('verified') is not False:
+                    continue
+                kind = value.get('failure_type')
+                if kind not in {'ValueError', 'OSError', 'PermissionError', 'FileExistsError', 'FileNotFoundError', 'ReadError', 'EOFError'}:
+                    continue
+                frames = value.get('helper_frames')
+                if not isinstance(frames, list): continue
+                safe = [{'function': f['function'], 'line': f['line']} for f in frames[:8]
+                        if isinstance(f,dict) and f.get('function') in {'main','pack','unpack','inventory','run_cli'}
+                        and type(f.get('line')) is int and 0 < f['line'] < 1000]
+                findings.append({'failure_type': kind, 'helper_frames': safe})
+    return findings[:4]
+
+
 def run():
     base = ROOT / '.local/recovery-smoke'
     base.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -130,6 +156,7 @@ def run():
         verify(report);report['status']='passed';report['backup_restore_verified']=True;code=0
     except Exception as exc:
         report['failure_type']=type(exc).__name__;report['failure_locations']=failure_locations(exc)
+        report['helper_diagnostics']=helper_diagnostics((source,target))
         if isinstance(exc,runtime.DemoError):report['failure_stage']=str(exc)
         # Private logs and backup bytes must NEVER be uploaded to the public repository.
     finally:

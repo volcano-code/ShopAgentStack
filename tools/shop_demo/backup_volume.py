@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import stat
+import sys
 import tarfile
 
 MAX_BYTES = 8 * 1024**3
@@ -24,7 +25,8 @@ def inventory(archive: Path) -> tuple[list[dict], str]:
     with tarfile.open(archive, 'r:gz') as tar:
         for item in tar:
             if (not name_ok(item.name) or item.name in seen or
-                    not (item.isdir() or item.isfile()) or item.mode & 0o7000 or
+                    not (item.isdir() or item.isfile()) or item.mode & 0o6000 or
+                    (item.mode & 0o1000 and not item.isdir()) or
                     item.uid < 0 or item.gid < 0):
                 raise ValueError('unsupported cold archive entry')
             if len(seen) >= MAX_ENTRIES or item.size < 0:
@@ -148,5 +150,21 @@ def main():
     print(json.dumps({'verified': True, 'inventory_sha256': digest}))
 
 
+def run_cli() -> int:
+    try:
+        main()
+        return 0
+    except Exception as exc:
+        # Fixed structural diagnostics only: no file names, contents, keys or OS error text.
+        frames = []
+        tb = exc.__traceback__
+        while tb:
+            if Path(tb.tb_frame.f_code.co_filename).name in ('helper.py', 'backup_volume.py'):
+                frames.append({'function': tb.tb_frame.f_code.co_name, 'line': tb.tb_lineno})
+            tb = tb.tb_next
+        print(json.dumps({'verified': False, 'failure_type': type(exc).__name__, 'helper_frames': frames}))
+        return 1
+
+
 if __name__ == '__main__':
-    main()
+    sys.exit(run_cli())
