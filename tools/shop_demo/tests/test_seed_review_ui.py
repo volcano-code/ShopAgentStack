@@ -51,3 +51,29 @@ def test_cli_ui_opt_in_is_explicit():
     from tools.shop_demo import __main__ as cli
     with pytest.raises(SystemExit) as error:cli.main(["init","--unknown-ui-option"])
     assert error.value.code==2
+
+
+def test_browser_workflow_gate_matches_actual_pytest_report(tmp_path, monkeypatch, capsys):
+    """Exercise the workflow's real argv, not merely the presence of a gate command."""
+    import shlex
+    import sys
+    import yaml
+    from tools.shop_quality import junit_gate
+    workflow=yaml.load((ROOT/".github/workflows/admin-review-ui.yml").read_text(),Loader=yaml.BaseLoader)
+    step=next(x for x in workflow["jobs"]["browser-review"]["steps"] if x.get("name")=="Test private template snapshot contracts")
+    lines=step["run"].splitlines()
+    pytest_args=shlex.split(next(x for x in lines if "python -m pytest" in x))
+    report=tmp_path/next(x.split("=",1)[1] for x in pytest_args if x.startswith("--junitxml="))
+    report.parent.mkdir(parents=True)
+    args=shlex.split(next(x for x in lines if "python -m tools.shop_quality.junit_gate" in x))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys,"argv",["junit_gate",*args[3:]])
+    # Fail closed for missing, empty, skipped-only or failing evidence; accept real executed cases.
+    assert junit_gate.main()==1
+    for content,code in [('<testsuite><testcase name="one"/></testsuite>',0),
+                         ('<testsuite/>',1),
+                         ('<testsuite><testcase><skipped/></testcase></testsuite>',1),
+                         ('<testsuite><testcase><failure/></testcase></testsuite>',1)]:
+        report.write_text(content)
+        assert junit_gate.main()==code
+    capsys.readouterr()

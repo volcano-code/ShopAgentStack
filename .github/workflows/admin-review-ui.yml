@@ -34,7 +34,7 @@ jobs:
           python -m pip install -r tools/shop_quality/requirements-test.txt
           mkdir -p .local/review-unit
           python -m pytest tools/shop_demo/tests tools/shop_e2e/tests -q --junitxml=.local/review-unit/tests.xml
-          python -m tools.shop_quality.junit_gate --root .local/review-unit
+          python -m tools.shop_quality.junit_gate --root .local/review-unit --pattern tests.xml
       - name: Build actual application through demo CLI
         run: python -m tools.shop_demo build
       - name: Require actual Java template tests
