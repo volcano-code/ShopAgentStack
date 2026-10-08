@@ -18,3 +18,16 @@
 .demo-review button:disabled { opacity: .5; cursor: not-allowed; }
 .demo-review :focus-visible { outline: 3px solid #3f765b; outline-offset: 3px; }
 @media(max-width:640px) { .demo-review .panel { padding: 16px; } .demo-actions .button { width: 100%; } }
+
+/* Keep long policy titles/digests and the review controls usable at 360px. */
+.demo-review { min-width: 0; overflow-wrap: anywhere; }
+.demo-review .page-heading { flex-wrap: wrap; gap: 16px; }
+.demo-review .page-heading > div { min-width: 0; }
+.demo-review button, .demo-review .text-button, .demo-items summary { min-height: 44px; }
+.demo-review input:not([type=checkbox]) { font-size: 16px; }
+.demo-items summary { padding: 6px 0; }
+@media(max-width:640px) {
+  .demo-review .demo-summary { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .demo-review .demo-confirm h2 { font-size: 20px; }
+  .demo-review .demo-resume small { line-height: 1.8; }
+}

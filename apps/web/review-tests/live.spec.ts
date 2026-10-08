@@ -15,6 +15,14 @@ test("administrator reviews seed and separately publishes; staff cannot read tem
  const denied=await request.get("/api/admin/shop_agent_stack/demo-imports/template",{headers:{Authorization:staffData.data.tokenHead+staffData.data.token}});
  const deniedBody=await denied.json();expect(deniedBody.code===200).toBe(false);
  await page.goto("/admin/demo-imports");await expect(page.getByRole("button",{name:"1. 生成商品与草稿预览"})).toBeEnabled();
+ // Real application at a narrow viewport; screenshot only the synthetic review section,
+ // excluding the account header and masking all IDs/digests/inputs.
+ await page.setViewportSize({width:360,height:900});
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+ const first=page.locator(".demo-items summary").first();await first.focus();await page.keyboard.press("Enter");
+ await expect(page.locator(".demo-items details").first()).toHaveAttribute("open","");
+ await page.locator(".demo-review").screenshot({path:resolve(state!,"artifacts/mobile-review.png"),
+   mask:[page.locator(".demo-review code"),page.locator(".demo-review input")],animations:"disabled"});
  await page.getByRole("button",{name:"1. 生成商品与草稿预览"}).click();
  await expect(page.getByRole("button",{name:"确认导入商品和草稿",exact:true})).toBeDisabled();
  await page.getByLabel("我已审核完整商品／政策内容及客户、员工可见范围").check();await page.locator("#demo-confirm-phrase").fill("导入商品和草稿");
@@ -24,9 +32,13 @@ test("administrator reviews seed and separately publishes; staff cannot read tem
  const id=await page.locator("#demo-preview-id").inputValue();await page.reload();
  await page.locator("#demo-preview-id").fill(id);await page.getByRole("button",{name:"查询预览状态"}).click();
  await expect(page.getByText("新增商品 100 · 新增草稿 96 · 本次发布政策 0")).toBeVisible();
+ await page.setViewportSize({width:1440,height:1000});
  await page.getByRole("button",{name:"2. 单独生成政策发布预览"}).click();
  await expect(page.getByRole("button",{name:"确认发布政策",exact:true})).toBeDisabled();
  await page.getByLabel("我已审核完整商品／政策内容及客户、员工可见范围").check();await page.locator("#demo-confirm-phrase").fill("发布已审核政策");
  await page.getByRole("button",{name:"确认发布政策",exact:true}).click();
  await expect(page.getByText("新增商品 0 · 新增草稿 0 · 本次发布政策 96")).toBeVisible();
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+ await page.locator(".demo-review").screenshot({path:resolve(state!,"artifacts/desktop-review.png"),
+   mask:[page.locator(".demo-review code"),page.locator(".demo-review input")],animations:"disabled"});
 });

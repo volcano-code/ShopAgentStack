@@ -43,8 +43,30 @@ PREVIEW 重新展示并清空勾选/确认短语，管理员重新审核后决�
 
 `unit/demo-import.test.mjs`：真实纯函数合同、截止时间、回执绑定及非法数据拒绝。
 `review-tests/mock.spec.ts`：真实 Chromium 页面、明确的 API 替身，覆盖分离确认、重复点击、丢失响应、过期、权限、刷新、旧预览变化。
-`tools.shop_demo.review_smoke`：独立新建 BM25 演示环境，真实浏览器/Java/MySQL 导入与二次发布，最后只清理本次自有测试资源。
+`tools.shop_demo.review_smoke --retrieval bm25` 或 `--retrieval hybrid`：每个模式独立新建环境，
+通过真实 Chromium/Java/MySQL 导入与二次发布，随后用新的合成客户通过 MCP 搜索并逐项核对来源。
+Hybrid 必须达到当前 Java epoch、Outbox READY 和同一 collection，再实际执行 HYBRID_RRF_RERANK；
+降级为 BM25 不能作为 Hybrid 通过。最后只清理该次自有测试资源。
 `Admin review UI` 工作流同时执行上述范围；某个提交是否通过应查看该提交的实际结果。
 
-本轮不新增 Hybrid 浏览器组合验收、旧状态升级、模板在线编辑、备份格式升级或多实例能力。
+M1.5a 增加 360/768/1440px 的 Chromium 交互测试：页面不横向溢出、按钮至少44px高、
+键盘展开、翻页和审核重置。真实流程在360px导入、1440px发布，保存仅含合成审核区的截图，
+遮盖ID/摘要/输入框，不包含账户头部。失败时截图移入私有日志，不作为公开成功证据上传。
+截图用于人工复核，不是图像像素基准，也不等于 iOS/Safari/Android 真机或完整无障碍认证。
+
+组合测试新增代码是否通过以同一提交的 `Admin review UI` 矩阵结果和 evidence.json 为准。
+不新增旧状态升级、模板在线编辑、备份格式升级或多实例能力。
 源码存在不等于所有测试已执行；不把 API 替身测试当成真实 Java 集成。
+
+## 组合验收命令
+
+```bash
+python -m tools.shop_demo.review_smoke --retrieval bm25
+python -m tools.shop_demo.review_smoke --retrieval hybrid
+```
+
+这两个命令仅用于干净 Git checkout 中的隔离验收，不接管已有演示目录。需要已完成
+Java/Web构建、Chromium安装，以及Hybrid的公开模型下载网络；不会调用生成模型。
+证据只包含状态、数量、索引版本和经遮盖的合成界面截图；不上传原始浏览器错误日志。
+测试设备能力依据 Playwright viewport/emulation 与 locator screenshot(mask) API，
+不修改应用授权或把页面发布回执改称向量索引就绪。

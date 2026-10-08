@@ -3,6 +3,7 @@ const id="11111111-1111-1111-1111-111111111111";
 const bundle={sourceSha256:"a".repeat(64),products:[{slug:"demo-cup",category:"杯具",name:"演示杯",price:"12.00",stock:180,weightGrams:100,material:"玻璃",specification:"一件",description:"合成商品",care:"清洗"}],policies:[{sourceId:"POL-001",title:"客户政策",content:"Literal <script>window.injected=true</script>",visibility:"CUSTOMER"},{sourceId:"SOP-001",title:"员工政策",content:"内部合成文字",visibility:"STAFF"}]};
 async function setup(page:Page, mode="normal") {
   const counts={apply:0,preview:0}; let stored:any;
+  const payload=mode==="responsive"?{...bundle,products:Array.from({length:11},(_,i)=>({...bundle.products[0],slug:`demo-${String.fromCharCode(97+i)}`,name:`演示商品 ${i+1}`}))}:bundle;
   await page.addInitScript(()=>sessionStorage.setItem("shop_agent_stack_admin","synthetic-browser-token"));
   await page.route("**/api/**",async route=>{
     const path=new URL(route.request().url()).pathname, req=route.request();
@@ -10,12 +11,12 @@ async function setup(page:Page, mode="normal") {
     if(path==="/api/admin/admin/info")return ok({username:"synthetic-admin"});
     if(path.endsWith("/template")) {
       if(mode==="denied") return route.fulfill({status:403,json:{code:403,message:"SECRET_SHOULD_NOT_RENDER"}});
-      return ok(bundle);
+      return ok(payload);
     }
     if(path.endsWith("/preview")){
       counts.preview++;const action=new URL(req.url()).searchParams.get("action");
       stored={id,action,bundle_hash:"b".repeat(64),confirmation_hash:"c".repeat(64),status:"PREVIEW",
-        expires_at:new Date(Date.now()+(mode==="expired"?-1000:600000)).toISOString(),review:bundle,
+        expires_at:new Date(Date.now()+(mode==="expired"?-1000:600000)).toISOString(),review:payload,
         precondition:action==="PUBLISH"?{mode:"PUBLISH_REVIEWED_POLICIES",policyIds:[1,2],statuses:["DRAFT","DRAFT"]}:{mode:"CREATE_PRODUCTS_AND_DRAFTS"}};
       return ok(stored);
     }
@@ -82,3 +83,29 @@ test("reload never retries mutations and manual preview restore resets consent",
  await expect(page.getByRole("button",{name:"确认导入商品和草稿",exact:true})).toBeDisabled();expect(c.apply).toBe(0);
  const persisted=await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}));expect(persisted).not.toContain("confirmation_hash");
 });
+
+for (const width of [360,768,1440]) {
+ test(`review controls and keyboard pagination fit ${width}px`,async({page})=>{
+  await page.setViewportSize({width,height:900});
+  const c=await setup(page,"responsive");
+  await expect(page.getByRole("button",{name:"1. 生成商品与草稿预览"})).toBeEnabled();
+  const first=page.locator(".demo-items summary").first();
+  await first.focus();await page.keyboard.press("Enter");
+  await expect(page.locator(".demo-items details").first()).toHaveAttribute("open","");
+  await page.getByRole("button",{name:"下一页",exact:true}).click();
+  await expect(page.getByText("第 2 / 2 页")).toBeVisible();
+  await expect(page.locator(".demo-items summary")).toHaveCount(1);
+  await page.getByRole("button",{name:"政策全文与可见范围"}).click();
+  await expect(page.getByText("第 1 / 1 页")).toBeVisible();
+  await page.getByRole("button",{name:"1. 生成商品与草稿预览"}).click();
+  await expect(page.getByRole("button",{name:"确认导入商品和草稿",exact:true})).toBeDisabled();
+  const dimensions=await page.evaluate(()=>({viewport:innerWidth,content:document.documentElement.scrollWidth}));
+  expect(dimensions.content).toBeLessThanOrEqual(dimensions.viewport+1);
+  for (const control of await page.locator(".demo-review button").all()) {
+   const box=await control.boundingBox();expect(box).not.toBeNull();
+   expect(box!.height).toBeGreaterThanOrEqual(44);expect(box!.x).toBeGreaterThanOrEqual(0);
+   expect(box!.x+box!.width).toBeLessThanOrEqual(width+1);
+  }
+  expect(c.apply).toBe(0);
+ });
+}

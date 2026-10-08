@@ -10,7 +10,11 @@ concurrency:
 jobs:
   browser-review:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        retrieval: [bm25, hybrid]
     defaults:
       run:
         shell: bash
@@ -47,14 +51,14 @@ jobs:
       - name: Browser interaction tests with explicit API doubles
         run: cd apps/web && npx --no-install playwright test --config=playwright.review.config.ts
       - name: Real browser to Java import and independent MySQL readback
-        run: python -m tools.shop_demo.review_smoke
+        run: python -m tools.shop_demo.review_smoke --retrieval ${{ matrix.retrieval }}
       - name: Cleanup only this newly owned synthetic environment
         if: always()
         run: |
           python - <<'PY'
           from tools.shop_demo.state import ROOT, load
           from tools.shop_demo.runtime import destroy
-          state = ROOT / '.local/review-smoke'
+          state = ROOT / '.local/review-smoke-${{ matrix.retrieval }}'
           if (state / 'manifest.json').is_file():
               owner, _ = load(ROOT, state)
               destroy(state, owner['project'])
@@ -62,12 +66,14 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: admin-review-ui
+          name: admin-review-ui-${{ matrix.retrieval }}
           path: |
             .local/review-unit/tests.xml
             .local/review-ui/mock.xml
-            .local/review-smoke/artifacts/evidence.json
-            .local/review-smoke/artifacts/browser.xml
+            .local/review-smoke-${{ matrix.retrieval }}/artifacts/evidence.json
+            .local/review-smoke-${{ matrix.retrieval }}/artifacts/browser.xml
+            .local/review-smoke-${{ matrix.retrieval }}/artifacts/mobile-review.png
+            .local/review-smoke-${{ matrix.retrieval }}/artifacts/desktop-review.png
             services/commerce/**/target/surefire-reports/TEST-*DemoImportTemplateTest.xml
           if-no-files-found: error
           retention-days: 14
