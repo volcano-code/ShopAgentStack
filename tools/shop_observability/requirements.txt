@@ -1,4 +1,4 @@
 # Optional module only. Does not change services/agent/requirements.lock.
 # Versions available and exercised in this delivery environment; not a claim of "latest".
 opentelemetry-api==1.42.1
-opentelemetry-sdk==1.42.1
+opentelemetry-sdk==1.45.0
