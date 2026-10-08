@@ -54,7 +54,7 @@
         <mall-common.version>1.0-SNAPSHOT</mall-common.version>
         <mall-mbg.version>1.0-SNAPSHOT</mall-mbg.version>
         <mall-security.version>1.0-SNAPSHOT</mall-security.version>
-        <commons-lang3.version>3.20.0</commons-lang3.version>
+        <commons-lang3.version>3.21.0</commons-lang3.version>
         <bouncycastle.version>1.84</bouncycastle.version>
     </properties>
 
