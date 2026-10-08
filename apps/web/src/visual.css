@@ -163,3 +163,18 @@ input::placeholder, textarea::placeholder { color: #758198; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+/* Keep fixed notices out of flex shrinking and controls on distinct narrow rows. */
+.assistant-shell .agent-notice { flex: 0 0 auto; }
+@media (max-width: 760px) {
+  .assistant-shell .agent-toolbar {
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr) auto auto;
+    align-items: center;
+  }
+  .agent-toolbar-mark { grid-column: 1; grid-row: 1; }
+  .agent-toolbar-title { grid-column: 2; grid-row: 1; min-width: 0; }
+  .assistant-shell .agent-toolbar > .button { grid-column: 3; grid-row: 1; white-space: nowrap; padding-inline: 10px; }
+  .assistant-shell .agent-toolbar > .icon-button { grid-column: 4; grid-row: 1; }
+  .assistant-shell .agent-toolbar > label { grid-column: 1 / -1; grid-row: 2; width: 100%; white-space: nowrap; }
+  .assistant-shell .agent-toolbar select { flex: 1; width: 0; min-width: 0; max-width: none; min-height: 44px; font-size: 14px; }
+}

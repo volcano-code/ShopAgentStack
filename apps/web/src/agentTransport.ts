@@ -21,11 +21,15 @@ export async function requestAgent<T>(path: string, authorization: string, body?
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: options.signal || AbortSignal.timeout(60000), cache: "no-store", redirect: "error",
   });
+  options.signal?.throwIfAborted();
   // Authentication is checked BEFORE JSON: gateways can return an HTML 401 page.
   if (res.status === 401) options.onUnauthorized?.();
   if (!res.ok) throw new AgentHttpError(res.status);
-  try { return await res.json() as T; }
-  catch { throw new Error("服务返回的状态无法读取，请刷新核实。"); }
+  let data: T;
+  try { data = await res.json() as T; }
+  catch { options.signal?.throwIfAborted(); throw new Error("服务返回的状态无法读取，请刷新核实。"); }
+  options.signal?.throwIfAborted();
+  return data;
 }
 function eventValue(value: unknown): RunEvent {
   const e = value as RunEvent;
@@ -40,7 +44,12 @@ export function runValue(value: unknown, expectedId: string): AgentRun {
   if (!r || r.id !== expectedId || !RUN_STATUSES.has(r.status) || typeof r.input !== "string" ||
       typeof r.provider !== "string" || !Array.isArray(r.events))
     throw new Error("返回的会话状态不匹配，请重新读取。");
-  r.events.forEach(eventValue);
+  let previous = 0;
+  for (const value of r.events) {
+    const event = eventValue(value);
+    if (event.id <= previous) throw new Error("进度记录顺序异常，请重新读取。");
+    previous = event.id;
+  }
   return r;
 }
 /** Incremental UTF-8 SSE parser: LF/CRLF/CR, comments, multiline data, replay IDs and bounded frames. */
@@ -82,8 +91,10 @@ export class EventDecoder {
 }
 export function applyEvent(run: AgentRun, event: RunEvent): AgentRun {
   if (run.events.some(e => e.id === event.id)) return run;
+  const newest = run.events.reduce((id, entry) => Math.max(id, entry.id), 0);
   const events = [...run.events, event].sort((a, b) => a.id - b.id);
-  return { ...run, events, status: event.kind === "state" && typeof event.data.status === "string" ? event.data.status : run.status };
+  // Retain a late historical event, but do not regress a newer persisted status.
+  return { ...run, events, status: event.id > newest && event.kind === "state" && typeof event.data.status === "string" ? event.data.status : run.status };
 }
 export function createLatch() {
   let occupied = false;
@@ -122,6 +133,8 @@ export async function followAgentRun(id: string, authorization: string, options:
       const res = await (options.fetcher || fetch)(`/api/agent${base}/events?after=${cursor}`, {
         headers: { Authorization: authorization }, signal: connection.signal, cache: "no-store", redirect: "error",
       });
+      if (options.signal.aborted) { await res.body?.cancel(); return; }
+      if (connection.signal.aborted) { await res.body?.cancel(); throw new DOMException("Aborted", "AbortError"); }
       if (res.status === 401) options.onUnauthorized?.();
       if (!res.ok) throw new AgentHttpError(res.status);
       if (!res.body || !res.headers.get("content-type")?.includes("text/event-stream")) throw new Error("Progress unavailable");
@@ -153,8 +166,10 @@ export async function followAgentRun(id: string, authorization: string, options:
       const signal = AbortSignal.any([options.signal, AbortSignal.timeout(20000)]);
       const run = runValue(await requestAgent<unknown>(base, authorization, undefined, "GET", { ...options, signal }), id);
       if (options.signal.aborted) return;
+      const snapshotCursor = run.events.at(-1)?.id || 0;
+      if (snapshotCursor < cursor) throw new Error("进度快照暂未同步，请重新读取。");
       options.onSnapshot(run);
-      cursor = run.events.reduce((value, event) => Math.max(value, event.id), cursor);
+      cursor = snapshotCursor;
       if (!isActive(run)) { notify("idle"); return; }
     } catch (error) {
       if (options.signal.aborted) return;

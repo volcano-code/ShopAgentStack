@@ -64,3 +64,49 @@ test("idle stream is bounded and recovers terminal server state",async()=>{
 
 test("unknown persisted status cannot masquerade as a terminal state",()=>assert.throws(()=>runValue(run("NEW_UNKNOWN"),"r")));
 test("unknown state event is refused",()=>assert.throws(()=>new EventDecoder().push(enc.encode(frame({id:1,kind:"state",data:{status:"DONE_TRUST_ME"}})))));
+
+// M1.6 follow-up regressions: evidence must not move backwards across async reads.
+test("late historical state cannot undo a newer terminal event",()=>{
+ const stopped={id:4,kind:"state",data:{status:"STOPPED"}};
+ const merged=applyEvent(run("STOPPED",[event(1),stopped]),{id:2,kind:"state",data:{status:"RUNNING"}});
+ assert.equal(merged.status,"STOPPED");assert.deepEqual(merged.events.map(e=>e.id),[1,2,4]);
+});
+for(const ids of [[2,1],[1,1]]) test(`snapshot event IDs must strictly increase: ${ids}`,()=>{
+ assert.throws(()=>runValue(run("RUNNING",ids.map(id=>event(id))),"r"));
+});
+test("aborted HTTP response cannot expire a newer login",async()=>{
+ const abort=new AbortController();let expired=0;
+ await assert.rejects(requestAgent("/runs/r","synthetic",undefined,"GET",{
+  signal:abort.signal,onUnauthorized:()=>expired++,fetcher:async()=>{abort.abort();return new Response("expired",{status:401});}
+ }),e=>e.name==="AbortError");
+ assert.equal(expired,0);
+});
+test("abort while parsing a snapshot does not deliver obsolete data",async()=>{
+ const abort=new AbortController();
+ await assert.rejects(requestAgent("/runs/r","synthetic",undefined,"GET",{
+  signal:abort.signal,fetcher:async()=>({ok:true,status:200,json:async()=>{abort.abort();return run();}})
+ }),e=>e.name==="AbortError");
+});
+test("canceled subscription ignores a delayed unauthorized response",async()=>{
+ const abort=new AbortController();let expired=0,snapshots=0;
+ await followAgentRun("r","synthetic",options({signal:abort.signal,onUnauthorized:()=>expired++,onSnapshot:()=>snapshots++,
+  fetcher:async()=>{abort.abort();return new Response("expired",{status:401});}
+ }));assert.equal(expired,0);assert.equal(snapshots,0);
+});
+test("stale snapshot cannot erase streamed events or claim completion",async()=>{
+ let streams=0;const snapshots=[],urls=[];
+ await followAgentRun("r","synthetic",options({onSnapshot:r=>snapshots.push(r),fetcher:async url=>{
+  urls.push(url);
+  if(url.includes("/events?")){streams++;return response(frame(event(2)));}
+  return Response.json(streams===1?run("COMPLETED",[event(1)]):run("COMPLETED",[event(1),event(2)]));
+ }}));
+ assert.equal(streams,2);assert.equal(snapshots.length,1);assert.equal(snapshots[0].events.at(-1).id,2);
+ assert.equal(urls[2],"/api/agent/runs/r/events?after=2");
+});
+test("perpetually stale snapshots pause without replacing received progress",async()=>{
+ const snapshots=[],states=[];let streams=0;
+ await followAgentRun("r","synthetic",options({cursor:3,onSnapshot:r=>snapshots.push(r),onConnection:s=>states.push(s),fetcher:async url=>{
+  if(url.includes("/events?")){streams++;return response(": heartbeat\n\n");}
+  return Response.json(run("COMPLETED",[event(1)]));
+ }}));assert.equal(streams,3);assert.equal(snapshots.length,0);assert.equal(states.at(-1),"paused");
+});

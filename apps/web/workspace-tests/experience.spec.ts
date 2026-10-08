@@ -12,6 +12,9 @@ async function setup(page: Page, mode: string) {
     events: mode === "confirm" ? [preview] : [{ id: 1, kind: "assistant_delta", data: { message_id: "m", text: "已接收你的请求。" } }] };
   const counts = { events: 0, confirm: 0, stop: 0, sends: 0, snapshots: 0 };
   await page.addInitScript((mode) => {
+    // Init scripts also run on login navigation. Seed only once per test tab.
+    if (sessionStorage.getItem("__workspace_test_seeded")) return;
+    sessionStorage.setItem("__workspace_test_seeded", "1");
     sessionStorage.setItem("shop_agent_stack_portal", "synthetic-workspace-test");
     if (mode !== "empty" && mode !== "race") sessionStorage.setItem("shop_agent_stack_session", "s");
   }, mode);
@@ -28,7 +31,9 @@ async function setup(page: Page, mode: string) {
     if (path.endsWith("/events")) {
       counts.events++;
       if (mode === "auth") return route.fulfill({ status: 401, contentType: "text/html", body: "PRIVATE_GATEWAY_BODY" });
-      const events = stored.status === "COMPLETED" ? [{ id: 5, kind: "state", data: { status: "COMPLETED" } }] : [];
+      if (stored.status === "COMPLETED" && !stored.events.some(event => event.kind === "state" && event.data.status === "COMPLETED"))
+        stored.events.push({ id: 5, kind: "state", data: { status: "COMPLETED" } });
+      const events = stored.status === "COMPLETED" ? stored.events.filter(event => event.kind === "state") : [];
       return route.fulfill({ contentType: "text/event-stream", body: ": heartbeat\r\n\r\n" + events.map(e => `data:${JSON.stringify(e)}\r\n\r\n`).join("") });
     }
     if (path === "/api/agent/runs/r/confirm") {
@@ -81,6 +86,11 @@ test("HTML 401 on the stream clears credentials and returns to login", async ({ 
   const { counts } = await setup(page, "auth");
   await expect(page).toHaveURL(/\/login\?next=/);
   expect(await page.evaluate(() => sessionStorage.getItem("shop_agent_stack_portal"))).toBeNull();
+  await page.reload();
+  expect(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("shop_agent_stack_")))).toEqual([]);
+  await page.goto("/app/assistant");
+  await expect(page).toHaveURL(/\/login\?next=/);
+  expect(await page.evaluate(() => sessionStorage.getItem("shop_agent_stack_portal"))).toBeNull();
   await expect(page.getByText("PRIVATE_GATEWAY_BODY")).toHaveCount(0); expect(counts.confirm).toBe(0);
 });
 test("slow previous session cannot replace a more recent selection", async ({ page }) => {
@@ -100,6 +110,20 @@ for (const width of [390, 1440]) test(`visual assistant and keyboard composer at
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
   await expect(page.getByLabel("发送消息")).toBeInViewport();
   await page.getByLabel("发送给购物助手").fill("");
+  await page.locator(".agent-messages").evaluate(element => { element.scrollTop = 0; });
   const output = resolve("../../.local/workspace-experience"); await mkdir(output, { recursive: true });
   await page.screenshot({ path: resolve(output, `assistant-${width}.png`), animations: "disabled" });
+});
+
+for (const width of [360, 390, 768]) test(`toolbar controls do not overlap at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 740 }); await setup(page, "empty");
+  const model = page.getByLabel("选择模型服务");
+  const handoff = page.getByRole("button", { name: "转人工客服", exact: true });
+  await expect(model).toBeVisible(); await expect(handoff).toBeVisible();
+  const a = (await model.boundingBox())!, b = (await handoff.boundingBox())!;
+  expect(a.x + a.width <= b.x + 1 || b.x + b.width <= a.x + 1 || a.y + a.height <= b.y + 1 || b.y + b.height <= a.y + 1).toBe(true);
+  const labelFits = await page.locator(".agent-toolbar > label").evaluate(element => element.scrollWidth <= element.clientWidth + 1);
+  expect(labelFits).toBe(true);
+  await expect(page.getByLabel("发送消息")).toBeInViewport();
+  await handoff.click(); await expect(page.getByRole("heading", { name: "联系人工客服", exact: true })).toBeVisible();
 });
