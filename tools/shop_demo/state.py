@@ -40,7 +40,7 @@ def no_symlinks(path: Path, boundary: Path) -> None:
 
 
 def validate_options(options: dict) -> None:
-    if set(options) - {"seed_import"} != {"retrieval", "port", "fixture", "model_network"}:
+    if set(options) - {"seed_import", "seed_review_ui"} != {"retrieval", "port", "fixture", "model_network"}:
         raise ValueError("unknown or missing demo options")
     if options["retrieval"] not in ("bm25", "hybrid"):
         raise ValueError("retrieval must be bm25 or hybrid")
@@ -50,6 +50,10 @@ def validate_options(options: dict) -> None:
         raise ValueError("demo flags must be booleans")
     if type(options.get("seed_import", False)) is not bool:
         raise ValueError("seed_import must be a boolean")
+    if type(options.get("seed_review_ui", False)) is not bool:
+        raise ValueError("seed_review_ui must be a boolean")
+    if options.get("seed_review_ui") and not options.get("seed_import"):
+        raise ValueError("seed review UI requires explicit seed import opt-in")
     if options["fixture"] and options["model_network"]:
         raise ValueError("fixture and model egress are mutually exclusive")
 
@@ -65,6 +69,13 @@ def layout(state: Path, owner: dict) -> dict:
     services = spec["services"]
     if options.get("seed_import", False):
         services["admin"]["environment"]["SHOP_AGENT_STACK_DEMO_IMPORT_ENABLED"] = "true"
+    if options.get("seed_review_ui", False):
+        services["admin"]["environment"].update({
+            "SHOP_AGENT_STACK_DEMO_IMPORT_UI_ENABLED": "true",
+            "SHOP_AGENT_STACK_DEMO_IMPORT_BUNDLE_FILE": "/opt/shop-demo/import-bundle.json"})
+        services["admin"]["volumes"].append({"type": "bind",
+            "source": str(state / "runtime/demo-import-bundle.json"),
+            "target": "/opt/shop-demo/import-bundle.json", "read_only": True})
     services["web"]["ports"][0]["published"] = str(options["port"])
     services["agent"]["environment"]["SHOP_AGENT_STACK_ENABLE_TEST_PROVIDER"] = str(options["fixture"]).lower()
     services["redis"]["command"] = ["redis-server", "--appendonly", "yes"]
@@ -159,6 +170,11 @@ def init(root: Path, state: Path, options: dict) -> dict:
         target = state / "runtime" / source.relative_to(root)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
+    if options.get("seed_review_ui", False):
+        from .seed_data import bundle
+        template = state / "runtime/demo-import-bundle.json"
+        write_private(template, json.dumps(bundle(root, state), ensure_ascii=False))
+        template.chmod(0o444)  # private host parent; read-only mount for the Java runtime
     (state / "init").mkdir()
     for index, source in enumerate(migrations):
         (state / "init" / f"{index:03d}-{source.name}").write_bytes(source.read_bytes())

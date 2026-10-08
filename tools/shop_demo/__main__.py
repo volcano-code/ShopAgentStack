@@ -13,7 +13,7 @@ from . import runtime
 from .state import ROOT, init, validate_state
 
 JAVA_TESTS = ("OrderOwnershipTest,CartPricingTest,AgentOperationTest,RefundServiceTest,"
-              "ProductQueryServiceTest,SupportServiceTest,CatalogManagementServiceTest,FulfillmentServiceTest,DemoImportTest,DemoImportAccessTest")
+              "ProductQueryServiceTest,SupportServiceTest,CatalogManagementServiceTest,FulfillmentServiceTest,DemoImportTest,DemoImportAccessTest,DemoImportTemplateTest")
 
 
 def build() -> None:
@@ -48,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
             sub.add_argument("--retrieval", choices=("bm25", "hybrid"), default="bm25")
             sub.add_argument("--port", type=int, default=18030)
             sub.add_argument("--enable-seed-import", action="store_true", help="enable administrator-only synthetic import APIs in this NEW demo")
+            sub.add_argument("--enable-seed-review-ui", action="store_true", help="also serve private review data to current administrators; requires --enable-seed-import")
             mode = sub.add_mutually_exclusive_group()
             mode.add_argument("--fixture", action="store_true", help="explicit non-AI scripted demo; never a real-model fallback")
             mode.add_argument("--allow-model-network", action="store_true", help="allow Agent public egress; no model calls are made by this CLI")
@@ -76,7 +77,8 @@ def main(argv: list[str] | None = None) -> int:
                 result = backup.restore(args.archive, args.key_file, state, args.port, args.confirm)
         elif args.action == "init":
             owner = init(ROOT, state, {"retrieval": args.retrieval, "port": args.port,
-                         "fixture": args.fixture, "model_network": args.allow_model_network, **({"seed_import": True} if args.enable_seed_import else {})})
+                         "fixture": args.fixture, "model_network": args.allow_model_network, **({"seed_import": True} if args.enable_seed_import else {}),
+                         **({"seed_review_ui": True} if args.enable_seed_review_ui else {})})
             result = {"initialized": True, "project": owner["project"], "credentials_file": str(state / "accounts.json"),
                       "next": "python -m tools.shop_demo up --state " + str(state)}
         elif args.action in ("seed-preview", "seed-apply"):
