@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "experiment_id": "synthetic-contract",
+  "source_kind": "fixture",
+  "git_revision": "dddddddddddddddddddddddddddddddddddddddd",
+  "code_patch_sha256": null,
+  "dataset_sha256": "7de6f6222c08d259254fe5c68ec664323dccd532e0fd21d0744b1106940414ed",
+  "prompt_version": "synthetic-v1",
+  "prompt_sha256": "721967fb7fd9f346d20833536b34a1c1a903dbdb2f6842f4a4614f9b3a802491",
+  "provider": "fixture",
+  "model": "deterministic-fixture",
+  "retriever": {
+    "mode": "bm25",
+    "embedding_model": null,
+    "reranker_model": null,
+    "top_k": 5
+  },
+  "started_at": "2026-09-28T00:00:00Z",
+  "finished_at": "2026-09-28T00:01:00Z",
+  "task_unit": "agent_turn"
+}

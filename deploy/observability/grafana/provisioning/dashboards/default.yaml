@@ -1,0 +1,9 @@
+apiVersion: 1
+providers:
+  - name: ShopAgentStack
+    folder: ShopAgentStack
+    type: file
+    disableDeletion: true
+    editable: false
+    options:
+      path: /etc/grafana/dashboards

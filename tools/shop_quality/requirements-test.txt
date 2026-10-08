@@ -1,0 +1,5 @@
+pytest==9.0.2
+pytest-cov==7.0.0
+PyYAML==6.0.3
+# Cold backup tests use the established Agent cryptography version.
+cryptography==50.0.1

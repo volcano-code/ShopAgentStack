@@ -1,0 +1,62 @@
+{
+  "source": "Maintainer supplied screenshots of local ShopAgentStack application",
+  "transform": "None; original PNG files copied without visual edits",
+  "scope": "UI demonstrations of simulated commerce; not model accuracy or performance evidence",
+  "files": [
+    {
+      "role": "customer",
+      "file": "customer-storefront.png"
+    },
+    {
+      "role": "customer",
+      "file": "customer-agent.png"
+    },
+    {
+      "role": "customer",
+      "file": "customer-policy-rag.png"
+    },
+    {
+      "role": "service",
+      "file": "service-after-sale-review.png"
+    },
+    {
+      "role": "service",
+      "file": "service-after-sale-completed.png"
+    },
+    {
+      "role": "customer",
+      "file": "customer-after-sale-completed.png"
+    },
+    {
+      "role": "customer",
+      "file": "customer-policies.png"
+    },
+    {
+      "role": "admin",
+      "file": "admin-policy.png"
+    },
+    {
+      "role": "admin",
+      "file": "admin-products.png"
+    },
+    {
+      "role": "admin",
+      "file": "admin-inventory.png"
+    },
+    {
+      "file": "admin-fulfillment-shipping.png",
+      "role": "admin",
+      "recipient_data": "Synthetic placeholder supplied in the application before capture"
+    },
+    {
+      "file": "customer-delivery-completed.png",
+      "role": "customer",
+      "recipient_data": "Synthetic placeholder supplied in the application before capture"
+    },
+    {
+      "file": "admin-fulfillment-completed.png",
+      "role": "admin",
+      "recipient_data": "Synthetic placeholder supplied in the application before capture"
+    }
+  ]
+}

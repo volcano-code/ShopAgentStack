@@ -1,0 +1,8 @@
+[run]
+branch = True
+source = tools.shop_quality, tools.shop_observability
+omit =
+    */tests/*
+    */examples/*
+[report]
+show_missing = True

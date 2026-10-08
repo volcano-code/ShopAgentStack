@@ -1,0 +1,78 @@
+{
+  "uid": "shop-trace-m12",
+  "title": "ShopAgentStack — Trace Diagnostics",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "tags": [
+    "shop-agent-stack",
+    "diagnostics-not-benchmark"
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Scope / 边界",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Local traces only. A sampled trace is not a refund audit or a task-success benchmark. Agent / MCP tracing is opt-in. Java server, MQ and retrieval-worker instrumentation are not included in M1.2. Use Explore with the returned X-Trace-ID to inspect a specific HTTP request."
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Recent Agent traces",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "shop-tempo"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{ resource.service.name = \"shop-agent-stack-agent\" }",
+          "limit": 20
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Recent MCP traces",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "shop-tempo"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{ resource.service.name = \"shop-agent-stack-mcp\" }",
+          "limit": 20
+        }
+      ]
+    }
+  ]
+}
