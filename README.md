@@ -6,7 +6,7 @@
 
 **个人开发的 AI 电商与客户服务项目 · 从智能问答到可追踪的业务执行**
 
-[项目实现](#项目实现与个人贡献) · [产品展示](docs/showcase.md) · [快速开始](docs/getting-started.md) · [系统架构](#系统架构) · [工程文档](docs/README.md)
+[项目实现](#项目实现与个人贡献) · [产品展示](docs/showcase.md) · [快速开始](docs/local-demo-m14.md) · [系统架构](#系统架构) · [工程文档](docs/README.md)
 
 </div>
 
@@ -166,11 +166,12 @@ FastAPI 接收会话请求，LangGraph 组织有界工具循环，自建 MCP 连
 
 ## 快速开始
 
-新增的[持久化本地演示开发入口](docs/local-demo-m14.md)（本版本仍需完成真实 Docker 启动验收）：Linux、Python 3.12+、本机 Docker/Compose、JDK 17/Maven 与 Node.js 24。
+推荐使用[持久化本地演示入口](docs/local-demo-m14.md)：Linux、Python 3.12+、本机 Docker/Compose、JDK 17/Maven 与 Node.js 24。
+BM25 与原生 Milvus 模式已有 Ubuntu 托管启动/重启验收；这不代表每台开发机或 Windows/WSL2 均已实测。
+下面命令面向已合入 `main` 的源码；检查尚未合并的 PR 时，应改用该 PR 的开发分支。
 
 ```bash
-# 本仓库的累积开发暂在此分支，main 尚未合并
-git clone --branch feat/m1.2-integration https://github.com/volcano-code/ShopAgentStack.git
+git clone https://github.com/volcano-code/ShopAgentStack.git
 cd ShopAgentStack
 python -m tools.shop_demo build
 python -m tools.shop_demo init --retrieval bm25
@@ -189,6 +190,18 @@ python -m tools.shop_demo stop  # 保留数据，下一次 up 复用
 
 该入口不接管旧环境或迁移旧卷。历史 PowerShell/MinIO 路径保留在[原安装指南](docs/getting-started.md)，
 不应将隔离 E2E 通过误认为旧 MinIO 镜像或旧普通启动入口已验证。
+
+## 演示交付范围
+
+| 已有入口 | 使用与限制 |
+|---|---|
+| 常驻本地演示 | `tools.shop_demo`；`stop` 保留数据，`destroy` 需要明确项目名确认 |
+| 合成商品与政策导入 | [预览/确认说明](docs/demo-seed-m14b.md)；新环境显式启用，政策发布需第二次确认 |
+| 加密备份与新目标还原 | [恢复指南](docs/demo-recovery-m14c.md)；仅同机、同镜像、关闭模型出站的 BM25 冷备 |
+| CI 汇总 | [严格门禁与判定记录](docs/ci-required.md)；缺组、跳过和来源不匹配均拒绝 |
+
+演示数据、支付/退款/配送均为合成或模拟。真实生成模型效果尚无独立验收结论；
+BGE 向量与精排模型的工程验证不等于生成模型回答准确率。不要将备份包、密钥和运行数据库提交Git。
 
 ## 数据与验证
 

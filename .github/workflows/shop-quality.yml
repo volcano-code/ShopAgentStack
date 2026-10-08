@@ -195,13 +195,22 @@ jobs:
     timeout-minutes: 5
     env:
       JOB_RESULTS: ${{ toJSON(needs) }}
+      CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - name: Fail for any skipped, failed or cancelled prerequisite
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Fail for any missing, skipped, failed or cancelled prerequisite
         run: |
-          python3 - <<'PY'
-          import json, os, sys
-          jobs = json.loads(os.environ['JOB_RESULTS'])
-          for name, value in jobs.items():
-              print(name, value['result'])
-          sys.exit(0 if jobs and all(v['result'] == 'success' for v in jobs.values()) else 1)
-          PY
+          python3 -m tools.shop_quality.ci_gate \
+            --checkout-sha "$(git rev-parse HEAD)" \
+            --tree-sha "$(git rev-parse HEAD^{tree})" \
+            --out artifacts/required
+      - name: Preserve the decision and exact source even on gate failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-required-${{ github.run_attempt }}
+          path: artifacts/required/
+          if-no-files-found: error
+          retention-days: 14

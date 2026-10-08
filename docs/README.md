@@ -20,3 +20,5 @@ ShopAgentStack 的产品能力、运行方式、服务边界和测试方法。
 [贡献指南](../CONTRIBUTING.md) · [安全说明](../SECURITY.md) · [许可证](../LICENSE) · [第三方来源](../THIRD_PARTY_NOTICES.md)
 
 - [M1.4c1 停机备份与全新 BM25 环境还原](demo-recovery-m14c.md)：加密、同机同镜像，按提交验收；非生产热备份。
+
+- [质量汇总与稳定版本检查](ci-required.md)：精确前置任务集、源码/重跑绑定与合入边界。
