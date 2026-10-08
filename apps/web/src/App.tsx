@@ -25,6 +25,7 @@ import { AccountSettings, accountApi } from "./AccountSettings";
 import "./account.css";
 import { SupportWorkspace } from "./Support";
 import { ProductManagement } from "./ProductManagement";
+import { DemoImportReview } from "./DemoImportReview";
 import { FulfillmentWorkspace } from "./Fulfillment";
 
 function safeNext(value: string | null) {
@@ -208,6 +209,7 @@ export function App() {
           [ShieldCheck, "管理中心", "/admin"],
           [PackageIcon, "商品管理", "/admin/products"],
           [ReceiptText, "订单履约", "/admin/orders"],
+          [ShieldCheck, "演示数据审核", "/admin/demo-imports"],
         ] as const);
   return (
     <div
@@ -338,7 +340,9 @@ export function App() {
           <span className="local-tag">SHOPAGENTSTACK</span>
         </header>
         <main>
-          {destination === "/admin/orders" ? (
+          {destination === "/admin/demo-imports" ? (
+            <DemoImportReview />
+          ) : destination === "/admin/orders" ? (
             <FulfillmentWorkspace />
           ) : destination === "/admin/products" ? (
             <ProductManagement />

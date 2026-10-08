@@ -1,0 +1,20 @@
+.demo-review { max-width: 1120px; }
+.demo-review .panel { padding: 24px; margin: 20px 0; }
+.demo-actions, .demo-summary { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin: 16px 0; }
+.demo-summary { justify-content: space-between; padding: 12px 0; }
+.demo-summary strong { font-size: 1.5rem; margin-left: 10px; }
+.demo-notice { border-left: 4px solid #537660; }
+.demo-review code { overflow-wrap: anywhere; font-size: .85em; }
+.demo-resume, .demo-confirm { display: grid; gap: 12px; }
+.demo-review input:not([type=checkbox]) { width: 100%; min-height: 44px; border: 1px solid #bbb; border-radius: 8px; padding: 10px; }
+.demo-review input[type=checkbox] { width: 20px; height: 20px; flex: none; }
+.demo-check { display: flex; gap: 10px; align-items: flex-start; }
+.demo-items details { border-bottom: 1px solid #ddd; padding: 14px 0; }
+.demo-items summary { cursor: pointer; line-height: 1.8; }
+.demo-items dt { font-weight: 600; margin-top: 12px; }
+.demo-items dd { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.demo-badge { display: inline-block; border: 1px solid currentColor; padding: 0 6px; font-size: .8em; border-radius: 4px; }
+.demo-policy-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.9; }
+.demo-review button:disabled { opacity: .5; cursor: not-allowed; }
+.demo-review :focus-visible { outline: 3px solid #3f765b; outline-offset: 3px; }
+@media(max-width:640px) { .demo-review .panel { padding: 16px; } .demo-actions .button { width: 100%; } }
