@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, Plus, Sparkles, Square, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowUp, Plus, Sparkles, Square, RefreshCw, Trash2, ShoppingBag, ReceiptText, ShieldCheck, ArrowUpRight, WifiOff } from "lucide-react";
 import { token } from "./api";
 import { ProductArt, Modal } from "./ui";
 import ReactMarkdown from "react-markdown";
@@ -7,14 +7,8 @@ import remarkGfm from "remark-gfm";
 import "./agent.css";
 import { HandoffButton } from "./Support";
 
-type Event = { id: number; kind: string; data: Record<string, unknown> };
-type Run = {
-  id: string;
-  input: string;
-  provider: string;
-  status: string;
-  events: Event[];
-};
+import { requestAgent, followAgentRun, applyEvent, createLatch, type Connection, type AgentRun as Run } from "./agentTransport";
+
 type Session = { id: string; title: string; runs?: Run[] };
 type Provider = {
   id: string;
@@ -47,24 +41,9 @@ const toolNames: Record<string, string> = {
   search_products: "查找商品与价格",
   get_product: "核对商品详情与库存",
 };
-async function agent<T>(path: string, body?: unknown, method?: string): Promise<T> {
-  const res = await fetch("/api/agent" + path, {
-    method: method || (body === undefined ? "GET" : "POST"),
-    headers: {
-      Authorization: token("portal"),
-      "Content-Type": "application/json",
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(60000),
-  });
-  const data = await res.json();
-  if (res.status === 401)
-    window.dispatchEvent(new Event("shop_agent_stack-session-expired"));
-  if (!res.ok)
-    throw new Error(
-      typeof data.detail === "string" ? data.detail : "服务暂不可用，请重试",
-    );
-  return data;
+function expired() { window.dispatchEvent(new window.Event("shop_agent_stack-session-expired")); }
+function agent<T>(path: string, body?: unknown, method?: string): Promise<T> {
+  return requestAgent<T>(path, token("portal"), body, method, { onUnauthorized: expired });
 }
 const money = (v: unknown) =>
   Number(v ?? 0).toLocaleString("zh-CN", {
@@ -315,6 +294,13 @@ export function AgentWorkspace({
   const [message, setMessage] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  const mutation = useRef(createLatch());
+  const selected = useRef(0);
+  const alive = useRef(true);
+  const [connection, setConnection] = useState<Connection>("idle");
+  const [streamRevision, setStreamRevision] = useState(0);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; selected.current++; }; }, []);
   const scroller = useRef<HTMLDivElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
@@ -345,11 +331,12 @@ export function AgentWorkspace({
     );
   }
   async function removeSession() {
-    if (!deleteTarget) return;
+    if (!deleteTarget || pendingAction || !mutation.current.enter()) return;
     setBusy(true);
     setDeleteError("");
     try {
       await agent("/sessions/" + deleteTarget.id, undefined, "DELETE");
+      if (!alive.current) return;
       setSessions((items) => items.filter((s) => s.id !== deleteTarget.id));
       if (session?.id === deleteTarget.id) {
         setSession(null);
@@ -363,23 +350,28 @@ export function AgentWorkspace({
     } catch (e) {
       setDeleteError((e as Error).message);
     } finally {
-      setBusy(false);
+      mutation.current.leave();
+      if (alive.current) setBusy(false);
     }
   }
   async function select(id: string) {
+    const version = ++selected.current;
     try {
       const s = await agent<Session>("/sessions/" + id);
+      if (!alive.current || selected.current !== version) return;
       followBottom.current = true;
       setSession(s);
       sessionStorage.setItem("shop_agent_stack_session", id);
       setError("");
+      setStreamRevision(value => value + 1);
     } catch (e) {
+      if (!alive.current || selected.current !== version) return;
       setError((e as Error).message);
-      sessionStorage.removeItem("shop_agent_stack_session");
     }
   }
   useEffect(() => {
     let mounted = true;
+    if (!signed) { setSession(null); setSessions([]); setProviders([]); return; }
     agent<{ providers: Provider[]; default_provider: string }>("/settings")
       .then((settings) => {
         const p = settings.providers;
@@ -394,7 +386,7 @@ export function AgentWorkspace({
           );
         }
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => { if (mounted) setError(e.message); });
     if (signed)
       agent<Session[]>("/sessions")
         .then((s) => {
@@ -404,93 +396,51 @@ export function AgentWorkspace({
             if (id && s.some((x) => x.id === id)) void select(id);
           }
         })
-        .catch((e) => setError(e.message));
+        .catch((e) => { if (mounted) setError(e.message); });
     return () => {
       mounted = false;
     };
   }, [signed]);
   const liveId = runs.find(active)?.id;
   useEffect(() => {
-    if (!liveId) return;
+    if (!liveId || !signed) { setConnection("idle"); return; }
     const controller = new AbortController();
-    let cursor = runs.find((r) => r.id === liveId)?.events.at(-1)?.id || 0;
-    async function follow() {
-      try {
-        const res = await fetch(
-          `/api/agent/runs/${liveId}/events?after=${cursor}`,
-          {
-            headers: { Authorization: token("portal") },
-            signal: controller.signal,
-          },
-        );
-        if (!res.ok || !res.body)
-          throw new Error("连接中断，请刷新会话恢复进度");
-        const reader = res.body.getReader(),
-          decoder = new TextDecoder();
-        let buffer = "";
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let end: number;
-          while ((end = buffer.indexOf("\n\n")) >= 0) {
-            const block = buffer.slice(0, end);
-            buffer = buffer.slice(end + 2);
-            const line = block.split("\n").find((l) => l.startsWith("data: "));
-            if (!line) continue;
-            const event = JSON.parse(line.slice(6)) as Event;
-            if (event.id <= cursor) continue;
-            cursor = event.id;
-            setSession((s) =>
-              s
-                ? {
-                    ...s,
-                    runs: s.runs?.map((r) =>
-                      r.id === liveId
-                        ? {
-                            ...r,
-                            events: [
-                              ...r.events.filter((e) => e.id !== event.id),
-                              event,
-                            ],
-                            status:
-                              event.kind === "state"
-                                ? String(event.data.status)
-                                : r.status,
-                          }
-                        : r,
-                    ),
-                  }
-                : s,
-            );
-          }
-        }
-        if (!controller.signal.aborted)
-          replaceRun(await agent<Run>("/runs/" + liveId));
-      } catch (e) {
-        if (!controller.signal.aborted) setError((e as Error).message);
-      }
-    }
-    void follow();
+    const sid = session?.id;
+    void followAgentRun(liveId, token("portal"), {
+      signal: controller.signal,
+      cursor: runs.find(r => r.id === liveId)?.events.at(-1)?.id || 0,
+      onUnauthorized: expired,
+      onConnection: setConnection,
+      onEvent: event => setSession(current => {
+        if (!current || controller.signal.aborted || current.id !== sid) return current;
+        return { ...current, runs: current.runs?.map(run => run.id === liveId ? applyEvent(run, event) : run) };
+      }),
+      onSnapshot: snapshot => setSession(current => {
+        if (!current || controller.signal.aborted || current.id !== sid) return current;
+        return { ...current, runs: current.runs?.map(run => run.id === liveId ? snapshot : run) };
+      }),
+    });
     return () => controller.abort();
-    // Reconnect from the persisted cursor when the active run or session changes.
+    // Only subscription identity changes restart the bounded, read-only stream.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveId, session?.id]);
+  }, [liveId, session?.id, signed, streamRevision]);
   useEffect(() => {
     const el = scroller.current;
     if (el && followBottom.current) el.scrollTop = el.scrollHeight;
   }, [runs.at(-1)?.events.length, session?.id]);
   async function send() {
-    if (!message.trim() || busy || executing) return;
+    if (!message.trim() || busy || executing || pendingAction || !mutation.current.enter()) return;
     setBusy(true);
     setError("");
     followBottom.current = true;
     try {
       const s = session || (await agent<Session>("/sessions", {}));
+      if (!alive.current) return;
       if (!session) {
         setSession({ ...s, runs: [] });
         sessionStorage.setItem("shop_agent_stack_session", s.id);
       }
+      if (!alive.current) return;
       const text = message.trim();
       if (
         !pendingRequest.current ||
@@ -509,17 +459,20 @@ export function AgentWorkspace({
         provider,
         request_id: pendingRequest.current.id,
       });
+      if (!alive.current) return;
       setSession((old) => ({
         ...s,
         runs: [...(old?.runs || []).filter((r) => r.id !== run.id), run],
       }));
       setMessage("");
       pendingRequest.current = null;
-      setSessions(await agent<Session[]>("/sessions"));
+      const list = await agent<Session[]>("/sessions");
+      if (alive.current) setSessions(list);
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(false);
+      mutation.current.leave();
+      if (alive.current) setBusy(false);
     }
   }
   async function action(
@@ -527,26 +480,31 @@ export function AgentWorkspace({
     kind: string,
     preview?: Record<string, unknown>,
   ) {
-    setBusy(true);
-    setError("");
+    if (!mutation.current.enter()) return;
+    if (pendingAction === run.id && kind !== "reconcile") { mutation.current.leave(); return; }
+    setBusy(true); setError("");
     try {
-      replaceRun(
-        await agent<Run>(
-          `/runs/${run.id}/${kind}`,
-          kind === "confirm"
-            ? {
-                operation_id: preview!.id,
-                confirmation_token: preview!.confirmationToken,
-              }
-            : {},
-        ),
-      );
-    } catch (e) {
-      setError((e as Error).message + "；可刷新会话核实当前状态");
-      if (session) await select(session.id);
-    } finally {
-      setBusy(false);
-    }
+      const result = await agent<Run>(`/runs/${run.id}/${kind}`, kind === "confirm"
+        ? { operation_id: preview!.id, confirmation_token: preview!.confirmationToken } : {});
+      if (!alive.current) return;
+      replaceRun(result); setPendingAction(null);
+      setStreamRevision(value => value + 1);
+    } catch {
+      if (!alive.current) return;
+      setPendingAction(run.id);
+      setError("请求结果暂未核实。不会自动重发，请先读取服务器状态；停止生成不代表撤销已提交的业务。");
+    } finally { mutation.current.leave(); if (alive.current) setBusy(false); }
+  }
+  async function checkAction(id: string) {
+    if (!mutation.current.enter()) return;
+    setBusy(true);
+    try {
+      const result = await agent<Run>("/runs/" + id);
+      if (!alive.current) return;
+      replaceRun(result); setPendingAction(null); setError("");
+      setStreamRevision(value => value + 1);
+    } catch { if (alive.current) setError("暂时无法核实，原请求不会自动重发。请稍后再读取状态。"); }
+    finally { mutation.current.leave(); if (alive.current) setBusy(false); }
   }
   return (
     <div className="page agent-page">
@@ -564,8 +522,9 @@ export function AgentWorkspace({
           <aside className="agent-history">
             <button
               className="button secondary"
-              disabled={busy || executing}
+              disabled={busy || executing || Boolean(pendingAction)}
               onClick={() => {
+                selected.current++;
                 setSession(null);
                 sessionStorage.removeItem("shop_agent_stack_session");
                 setError("");
@@ -578,15 +537,15 @@ export function AgentWorkspace({
             {sessions.map((s) => (
               <div key={s.id} className={`agent-session-row ${s.id === session?.id ? "selected" : ""}`}>
               <button
-                disabled={busy}
                 className="agent-session-title"
                 title={s.title}
+                disabled={busy || Boolean(pendingAction)}
                 onClick={() => void select(s.id)}
               >
                 {s.title}
               </button>
               <button className="agent-session-delete" aria-label={`删除对话：${s.title}`}
-                title="删除对话" disabled={busy || (s.id === session?.id && executing)}
+                title="删除对话" disabled={busy || Boolean(pendingAction) || (s.id === session?.id && executing)}
                 onClick={() => { setDeleteError(""); setDeleteTarget(s); }}>
                 <Trash2 size={15} />
               </button>
@@ -596,8 +555,8 @@ export function AgentWorkspace({
           </aside>
           <section className="agent-conversation" aria-label="助手会话">
             <div className="agent-toolbar">
-              <Sparkles size={18} />
-              <strong>购物助手</strong>
+              <span className="agent-toolbar-mark"><Sparkles size={20} /></span>
+              <div className="agent-toolbar-title"><strong>购物助手</strong><small>有依据的回答 · 由你确认的操作</small></div>
               <HandoffButton
                 initialTitle={runs.at(-1)?.input || ""}
                 excerpt={runs
@@ -617,7 +576,7 @@ export function AgentWorkspace({
                 <select
                   aria-label="选择模型服务"
                   value={provider}
-                  disabled={busy || executing}
+                  disabled={busy || executing || Boolean(pendingAction)}
                   onChange={(e) => setProvider(e.target.value)}
                 >
                   {providers.map((p) => (
@@ -666,14 +625,19 @@ export function AgentWorkspace({
                   <div className="agent-orb">
                     <Sparkles size={30} />
                   </div>
-                  <h2>有什么可以帮你？</h2>
+                  <span className="agent-kicker">SHOPPING, WITH CLARITY</span>
+                  <h2>把问题交给助手，<br />把决定留给自己。</h2>
                   <p>
-                    支持订单、售后与已发布政策查询；政策回答附带原文依据。暂不支持联网搜索。
+                    查商品、核对订单、了解售后政策。重要操作先预览，再由你确认；不支持联网搜索。
                   </p>
                   <div className="agent-suggestions">
-                    {["查询我的订单", "查询我的售后进度"].map((t) => (
-                      <button key={t} onClick={() => setMessage(t)}>
-                        {t} ↗
+                    {[
+                      { text: "查询我的订单", note: "核对你的订单与当前状态", icon: ReceiptText },
+                      { text: "查询我的售后进度", note: "查看申请进度与处理结果", icon: ShieldCheck },
+                      { text: "帮我查找马克杯", note: "以实时商品信息为准", icon: ShoppingBag },
+                    ].map(({ text, note, icon: Icon }) => (
+                      <button type="button" key={text} onClick={() => { setMessage(text); composerInput.current?.focus(); }}>
+                        <Icon size={22} /><strong>{text}</strong><span>{note}</span><ArrowUpRight className="suggestion-arrow" size={16} />
                       </button>
                     ))}
                   </div>
@@ -683,7 +647,7 @@ export function AgentWorkspace({
                 <article className="agent-turn" key={run.id}>
                   <div className="agent-user">{run.input}</div>
                   <div className="agent-answer">
-                    <small className="agent-state">
+                    <small className="agent-state" data-status={run.status}>
                       <Sparkles size={14} />
                       {labels[run.status] || run.status}
                       {run.provider === "fixture" ? " · 非 AI 验收" : ""}
@@ -737,7 +701,7 @@ export function AgentWorkspace({
                             <div className="agent-actions">
                               <button
                                 className="button"
-                                disabled={busy}
+                                disabled={busy || pendingAction === run.id}
                                 onClick={() =>
                                   void action(run, "confirm", e.data)
                                 }
@@ -746,7 +710,7 @@ export function AgentWorkspace({
                               </button>
                               <button
                                 className="button secondary"
-                                disabled={busy}
+                                disabled={busy || pendingAction === run.id}
                                 onClick={() => void action(run, "stop")}
                               >
                                 取消申请
@@ -773,7 +737,7 @@ export function AgentWorkspace({
                     {["QUEUED", "RUNNING"].includes(run.status) && (
                       <button
                         className="text-button"
-                        disabled={busy}
+                        disabled={busy || pendingAction === run.id}
                         onClick={() => void action(run, "stop")}
                       >
                         <Square size={12} />
@@ -784,6 +748,15 @@ export function AgentWorkspace({
                 </article>
               ))}
             </div>
+            {(connection === "reconnecting" || connection === "paused") && (
+              <div className="agent-connection" role="status">
+                <WifiOff size={18} /><div><strong>{connection === "paused" ? "进度连接已暂停" : "正在恢复进度连接"}</strong>
+                <span>已接收内容保留。只读取原任务进度，不会重新提交请求。</span></div>
+                {connection === "paused" && <button className="button secondary" type="button" onClick={() => setStreamRevision(value => value + 1)}>重新连接进度</button>}
+              </div>
+            )}
+            {pendingAction && <div className="agent-connection" role="status"><ShieldCheck size={18} /><span>先核实，再继续操作</span>
+              <button className="button secondary" disabled={busy} onClick={() => void checkAction(pendingAction)}>读取服务器状态</button></div>}
             {error && (
               <p className="error" role="alert">
                 {error}
@@ -830,6 +803,7 @@ export function AgentWorkspace({
                   disabled={
                     busy ||
                     executing ||
+                    Boolean(pendingAction) ||
                     !message.trim() ||
                     !providers.find((p) => p.id === provider)?.configured
                   }
