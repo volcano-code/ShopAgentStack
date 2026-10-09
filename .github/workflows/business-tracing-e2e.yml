@@ -51,7 +51,7 @@ jobs:
           mkdir -p .local/java-tracing
           git rev-parse HEAD HEAD^{tree} > .local/java-tracing/source.txt
           python -m tools.shop_quality.junit_gate --root services/commerce/shop-agent-stack-after-sale/target/surefire-reports --pattern TEST-com.macro.mall.shopagentstack.CommerceTracingTest.xml | tee .local/java-tracing/tests.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: java-tracing-tests
@@ -69,7 +69,7 @@ jobs:
       - name: Retry cleanup of only this owned disposable project
         if: always()
         run: python -m tools.shop_e2e cleanup
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: business-tracing-e2e
