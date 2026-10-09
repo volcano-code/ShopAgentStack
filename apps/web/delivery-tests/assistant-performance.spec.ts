@@ -29,7 +29,7 @@ test("assistant performance samples (production, synthetic APIs, fresh contexts)
       if (scenario !== "empty") await expect(page.locator('.agent-text strong').first()).toBeAttached();
       await page.evaluate(() => new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
       const values = await page.evaluate(() => ({
-        ...(window as unknown as { __assistantMetrics: Record<string, number | null> }).__assistantMetrics,
+        ...(window as unknown as { __assistantMetrics: { shellMs: number | null; textMs: number | null; richMs: number | null } }).__assistantMetrics,
         fcpMs: performance.getEntriesByName('first-contentful-paint')[0]?.startTime ?? null,
         mountedTurns: document.querySelectorAll('.agent-turn').length,
         domElements: document.getElementsByTagName('*').length,
