@@ -43,6 +43,18 @@ jobs:
           npm --prefix .local/bundle-baseline/apps/web ci
           npm --prefix .local/bundle-baseline/apps/web run build -- --manifest
           node apps/web/scripts/bundle-budget.mjs --dist apps/web/dist --baseline-dist .local/bundle-baseline/apps/web/dist --out .local/frontend-delivery/bundle.json
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ace4e0a75d5e0abacb80c035f3ca22433fa8759d
+          path: .local/assistant-baseline
+          persist-credentials: false
+      - name: Build fixed pre-Markdown-split baseline and verify assistant closure
+        run: |
+          mkdir -p .local/assistant-performance
+          git -C .local/assistant-baseline rev-parse HEAD HEAD^{tree} > .local/assistant-performance/baseline-source.txt
+          npm --prefix .local/assistant-baseline/apps/web ci
+          npm --prefix .local/assistant-baseline/apps/web run build
+          node apps/web/scripts/assistant-budget.mjs apps/web/dist .local/assistant-baseline/apps/web/dist .local/assistant-performance/bundle.json
       - name: Block high/critical advisories and unavailable audit evidence
         run: >-
           python -m tools.shop_quality.npm_audit_gate
@@ -54,6 +66,14 @@ jobs:
           npm run test:workspace
       - name: Verify production lazy chunks and manual recovery (synthetic APIs)
         run: npm --prefix apps/web run test:delivery
+      - name: Measure fixed baseline with the same production browser harness
+        env:
+          SHOP_ASSISTANT_BASELINE: '1'
+          PLAYWRIGHT_JUNIT_OUTPUT_FILE: ../../.local/assistant-performance/baseline-browser.xml
+        run: npm --prefix apps/web run test:delivery -- --grep 'assistant performance samples'
+      - name: Require baseline measurement execution
+        if: always()
+        run: python -m tools.shop_quality.junit_gate --root .local/assistant-performance --pattern baseline-browser.xml
       - name: Require executed production delivery tests
         if: always()
         run: python -m tools.shop_quality.junit_gate --root .local/frontend-delivery --pattern browser.xml
@@ -66,6 +86,10 @@ jobs:
           name: workspace-experience
           path: |
             .local/workspace-experience/source.txt
+            .local/assistant-performance/*.json
+            .local/assistant-performance/baseline-source.txt
+            .local/assistant-performance/baseline-browser.xml
+            apps/web/dist/.vite/manifest.json
             .local/frontend-delivery/baseline-source.txt
             .local/frontend-delivery/bundle.json
             .local/frontend-delivery/browser.xml
