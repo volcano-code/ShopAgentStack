@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, useEffect, useState } from "react";
 import {
   ShoppingBag,
   Package as PackageIcon,
@@ -17,16 +17,27 @@ import {
   ArrowRightLeft,
 } from "lucide-react";
 import { api, token, type Side } from "./api";
-import { Customer } from "./Customer";
-import { StaffWorkspace } from "./StaffWorkspace";
-import { AgentWorkspace } from "./AgentWorkspace";
 import { Login } from "./Login";
-import { AccountSettings, accountApi } from "./AccountSettings";
+import { accountApi } from "./accountApi";
+import { PageBoundary } from "./PageBoundary";
+import { loadPageModule } from "./pageLoad";
+// Keep presentation cascade eager and ordered; only JavaScript pages are deferred.
+import "./fulfillment.css";
+import "./agent.css";
+import "./support.css";
 import "./account.css";
-import { SupportWorkspace } from "./Support";
-import { ProductManagement } from "./ProductManagement";
-import { DemoImportReview } from "./DemoImportReview";
-import { FulfillmentWorkspace } from "./Fulfillment";
+import "./catalog-management.css";
+import "./demo-import.css";
+
+// Module-scope lazy identities are stable. No prefetch before login validation.
+const Customer = lazy(() => loadPageModule(() => import("./Customer")).then(m => ({ default: m.Customer })));
+const StaffWorkspace = lazy(() => loadPageModule(() => import("./StaffWorkspace")).then(m => ({ default: m.StaffWorkspace })));
+const AgentWorkspace = lazy(() => loadPageModule(() => import("./AgentWorkspace")).then(m => ({ default: m.AgentWorkspace })));
+const AccountSettings = lazy(() => loadPageModule(() => import("./AccountSettings")).then(m => ({ default: m.AccountSettings })));
+const SupportWorkspace = lazy(() => loadPageModule(() => import("./Support")).then(m => ({ default: m.SupportWorkspace })));
+const ProductManagement = lazy(() => loadPageModule(() => import("./ProductManagement")).then(m => ({ default: m.ProductManagement })));
+const DemoImportReview = lazy(() => loadPageModule(() => import("./DemoImportReview")).then(m => ({ default: m.DemoImportReview })));
+const FulfillmentWorkspace = lazy(() => loadPageModule(() => import("./Fulfillment")).then(m => ({ default: m.FulfillmentWorkspace })));
 
 function safeNext(value: string | null) {
   try {
@@ -340,6 +351,7 @@ export function App() {
           <span className="local-tag">SHOPAGENTSTACK</span>
         </header>
         <main>
+          <PageBoundary key={destination}>
           {destination === "/admin/demo-imports" ? (
             <DemoImportReview />
           ) : destination === "/admin/orders" ? (
@@ -374,6 +386,7 @@ export function App() {
           ) : (
             <StaffWorkspace adminView={isAdmin} />
           )}
+          </PageBoundary>
         </main>
         <footer>
           <span>SHOPAGENTSTACK</span>
