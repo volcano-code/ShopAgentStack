@@ -7,6 +7,11 @@ plain text, including subsequent updates. No automatic module retry, page reload
 message submission or confirmation is performed. Raw HTML and external Markdown
 images remain disabled in the formatted view; existing link handling is retained.
 The page and confirmation controls are outside this optional formatting boundary.
+A shared, single-attempt module store exposes stable snapshots to
+useSyncExternalStore; it starts only for nonempty rendered text and unsubscribes
+on unmount. Formatting upgrades ordinary readable content rather than suspending
+it again. Rejected imports remain failed until an explicit page reload, without
+replaying any business request.
 Streaming Markdown remains available after loading; there is no deliberately
 introduced response delay or change to tool/citation/business evidence handling.
 Unchanged reply and text components are memoized, not assumed immutable globally.
@@ -44,7 +49,8 @@ formatter; total application bytes may increase. M1.7 entry budgets stay intact.
 
 `assistant-performance.spec.ts` records three fresh-context, unthrottled Chromium
 loopback samples each for an empty assistant and 120 completed synthetic turns.
-It samples shell/text/formatted-text appearance using an in-page MutationObserver,
+It samples shell/text/formatted-text DOM insertion using an in-page MutationObserver
+(these timestamps do not guarantee on-screen painting or visibility),
 FCP if available, DOM elements and decoded JS resource bytes. Candidate and fixed
 baseline use the same test and viewport. Full session JSON is still downloaded.
 The report is ignored local output with fixed field names and numeric metrics,

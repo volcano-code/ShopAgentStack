@@ -36,3 +36,30 @@ test('assistant budget includes its static dependencies and refuses an eager for
  assert.equal(decideAssistant({assistant:{bytes:400000},formatterDeferred:true},before).passed,false);
  assert.throws(()=>decideAssistant({assistant:{bytes:1}}, {assistant:{bytes:0}}));
 });
+
+import { createOptionalModule } from '../src/optionalModule.ts';
+test('optional module does not load before start and snapshot identity stays stable', async()=>{
+ let calls=0; const value={default:'renderer'}, store=createOptionalModule(async()=>{calls++;return value});
+ const before=store.getSnapshot(); assert.equal(before.state,'idle'); assert.equal(store.getSnapshot(),before); assert.equal(calls,0);
+ await store.start(); assert.equal(calls,1); assert.equal(store.getSnapshot().value,value);
+});
+test('concurrent starts share a promise and loading result', async()=>{
+ let finish; let calls=0; const store=createOptionalModule(()=>{calls++;return new Promise(r=>{finish=r})});
+ const p=store.start(); assert.equal(store.start(),p); assert.equal(store.getSnapshot().state,'pending');
+ await Promise.resolve(); assert.equal(calls,1); finish('renderer'); await p;
+ assert.equal(store.getSnapshot().state,'ready'); assert.equal(store.start(),p); assert.equal(calls,1);
+});
+for(const kind of ['throw','reject']) test(`optional module ${kind} is redacted and never retried`,async()=>{
+ let calls=0; const store=createOptionalModule(()=>{calls++;if(kind==='throw')throw new Error('PRIVATE'); return Promise.reject(new Error('PRIVATE'))});
+ await store.start(); await store.start(); assert.equal(calls,1); assert.deepEqual(store.getSnapshot(),{state:'failed'});
+});
+test('unsubscribed view receives no late completion notification',async()=>{
+ let finish; const store=createOptionalModule(()=>new Promise(r=>{finish=r})); let notifications=0;
+ const unsubscribe=store.subscribe(()=>{notifications++}); const p=store.start(); assert.equal(notifications,1);
+ unsubscribe(); await Promise.resolve(); finish('renderer'); await p;
+ assert.equal(notifications,1); assert.equal(store.getSnapshot().state,'ready');
+});
+test('reentrant subscriber cannot start a second import',async()=>{
+ let calls=0; const store=createOptionalModule(async()=>{calls++;return 'renderer'});
+ store.subscribe(()=>{void store.start()}); await store.start(); assert.equal(calls,1);
+});
