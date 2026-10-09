@@ -1,9 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Plus, Sparkles, Square, RefreshCw, Trash2, ShoppingBag, ReceiptText, ShieldCheck, ArrowUpRight, WifiOff } from "lucide-react";
 import { token } from "./api";
 import { ProductArt, Modal } from "./ui";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { AssistantText } from "./AssistantText";
+import { HISTORY_BATCH, historyWindow } from "./assistantHistory";
 import "./agent.css";
 import { HandoffButton } from "./Support";
 
@@ -124,7 +124,7 @@ function BusinessCards({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-function Reply({ run }: { run: Run }) {
+const Reply = memo(function Reply({ run }: { run: Run }) {
   const messages = new Map<string, string>();
   const orders = new Map<string, Record<string, unknown>>();
   const sales = new Map<string, Record<string, unknown>>();
@@ -238,20 +238,7 @@ function Reply({ run }: { run: Run }) {
       )}
       {[...messages].map(([id, text]) => (
         <div className="agent-text" key={id}>
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            skipHtml
-            components={{
-              img: () => null,
-              a: ({ children, href }) => (
-                <a href={href} target="_blank" rel="noopener noreferrer">
-                  {children}
-                </a>
-              ),
-            }}
-          >
-            {text}
-          </ReactMarkdown>
+          <AssistantText text={text} />
         </div>
       ))}
       {active(run) && (
@@ -276,7 +263,7 @@ function Reply({ run }: { run: Run }) {
       )}
     </>
   );
-}
+});
 
 export function AgentWorkspace({
   signed,
@@ -300,6 +287,7 @@ export function AgentWorkspace({
   const [connection, setConnection] = useState<Connection>("idle");
   const [streamRevision, setStreamRevision] = useState(0);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [inspectedRun, setInspectedRun] = useState<string | null>(null);
   useEffect(() => { alive.current = true; return () => { alive.current = false; selected.current++; }; }, []);
   const scroller = useRef<HTMLDivElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
@@ -316,6 +304,22 @@ export function AgentWorkspace({
   }, [message]);
   const followBottom = useRef(true);
   const runs = session?.runs || [];
+  const [history, setHistory] = useState<{ sid: string | null; recent: number }>({ sid: null, recent: HISTORY_BATCH });
+  const recent = history.sid === session?.id ? history.recent : HISTORY_BATCH;
+  const visibleHistory = useMemo(() => historyWindow(runs, recent, pendingAction || inspectedRun), [runs, recent, pendingAction, inspectedRun]);
+  const historyAnchor = useRef<{ sid: string; top: number; height: number } | null>(null);
+  function revealHistory() {
+    const el = scroller.current;
+    if (!session || !el) return;
+    followBottom.current = false;
+    historyAnchor.current = { sid: session.id, top: el.scrollTop, height: el.scrollHeight };
+    setHistory({ sid: session.id, recent: recent + HISTORY_BATCH });
+  }
+  useLayoutEffect(() => {
+    const anchor = historyAnchor.current, el = scroller.current;
+    historyAnchor.current = null;
+    if (anchor && el && anchor.sid === session?.id) el.scrollTop = anchor.top + el.scrollHeight - anchor.height;
+  }, [recent, session?.id]);
   const executing = runs.some(active);
   const pendingRequest = useRef<{
     text: string;
@@ -360,6 +364,8 @@ export function AgentWorkspace({
       const s = await agent<Session>("/sessions/" + id);
       if (!alive.current || selected.current !== version) return;
       followBottom.current = true;
+      setInspectedRun(null);
+      setHistory({ sid: id, recent: HISTORY_BATCH });
       setSession(s);
       sessionStorage.setItem("shop_agent_stack_session", id);
       setError("");
@@ -482,6 +488,7 @@ export function AgentWorkspace({
   ) {
     if (!mutation.current.enter()) return;
     if (pendingAction === run.id && kind !== "reconcile") { mutation.current.leave(); return; }
+    setInspectedRun(run.id);
     setBusy(true); setError("");
     try {
       const result = await agent<Run>(`/runs/${run.id}/${kind}`, kind === "confirm"
@@ -643,8 +650,14 @@ export function AgentWorkspace({
                   </div>
                 </div>
               )}
-              {runs.map((run) => (
-                <article className="agent-turn" key={run.id}>
+              {visibleHistory.hidden > 0 && <div className="agent-history-window">
+                <button type="button" className="button secondary" onClick={revealHistory}>
+                  显示更早的对话（还有 {visibleHistory.hidden} 轮）
+                </button>
+                <small>仅折叠较早的已结束记录，不删除内容，不改变模型上下文。待处理操作始终显示。</small>
+              </div>}
+              {visibleHistory.visible.map((run) => (
+                <article className="agent-turn" key={run.id} data-run-id={run.id}>
                   <div className="agent-user">{run.input}</div>
                   <div className="agent-answer">
                     <small className="agent-state" data-status={run.status}>

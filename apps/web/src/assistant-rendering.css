@@ -1,0 +1,6 @@
+/* Optional rich text and bounded history: the complete response remains selectable. */
+.agent-plain-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; }
+.agent-format-note { display: block; color: #655f76; font-size: 12px; margin-top: 8px; }
+.agent-history-window { display: grid; justify-items: center; gap: 10px; margin-bottom: 20px; }
+.agent-history-window button { min-height: 44px; white-space: normal; }
+.agent-history-window small { text-align: center; color: #655f76; line-height: 1.6; }
