@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { canConfirm, expiry, ID, type Action, type Bundle, type Plan, type Receipt } from "./demoImport";
 import * as gateway from "./demoImportApi";
 import "./demo-import.css";
+import { ShieldCheck } from "lucide-react";
 
 /** No automatic mutation, no stored plan/token, no Markdown/HTML execution of policy text. */
 export function DemoImportReview() {
@@ -57,8 +58,13 @@ export function DemoImportReview() {
   const expired=Boolean(plan&&plan.status==="PREVIEW"&&expiry(plan.expires_at)<=now);
   return <section className="page demo-review" aria-busy={busy}>
     <div className="page-heading"><div><div className="eyebrow">DEMO DATA / ADMINISTRATOR REVIEW</div>
-      <h1>演示数据审核</h1><p>导入商品与政策草稿，和发布政策，是两次独立操作。</p></div>
+      <span className="workspace-chip"><ShieldCheck size={14} />管理员专用</span><h1>演示数据审核</h1><p>导入商品与政策草稿，和发布政策，是两次独立操作。</p></div>
       <a className="text-button" href="/admin">返回管理中心</a></div>
+    <ol className="review-steps" aria-label="审核流程">
+      <li><b>01</b><div><strong>准备与预览</strong><small>先看内容，不写入业务数据</small></div></li>
+      <li><b>02</b><div><strong>审核后导入</strong><small>商品入库，政策保持草稿</small></div></li>
+      <li><b>03</b><div><strong>单独发布政策</strong><small>重新审核，独立确认</small></div></li>
+    </ol>
     <div className="panel demo-notice"><strong>仅用于合成演示数据</strong>
       <p>页面不调用模型、不产生真实支付。不覆盖已有数据；撤回或修改过的政策需逐项处理。</p>
       <p>员工政策仅供管理员审核，不会作为客户检索证据。原有运行快照不会自动升级。</p></div>
@@ -78,7 +84,7 @@ export function DemoImportReview() {
       <div className="demo-summary"><span>商品 <strong>{data.products.length}</strong></span>
         <span>客户政策 <strong>{data.policies.filter(p=>p.visibility==="CUSTOMER").length}</strong></span>
         <span>员工政策 <strong>{data.policies.filter(p=>p.visibility==="STAFF").length}</strong></span></div>
-      <p>数据来源摘要：<code>{data.sourceSha256}</code></p>
+      <details className="demo-technical"><summary>数据来源与校验信息</summary><p>数据来源摘要：<code>{data.sourceSha256}</code></p></details>
       <div className="demo-actions" role="group" aria-label="审核内容分类">
         <button className="button secondary" aria-pressed={tab==="products"} onClick={()=>{setTab("products");setPage(0);}}>商品明细</button>
         <button className="button secondary" aria-pressed={tab==="policies"} onClick={()=>{setTab("policies");setPage(0);}}>政策全文与可见范围</button></div>
@@ -87,7 +93,7 @@ export function DemoImportReview() {
         <dl><dt>分类 / 标识</dt><dd>{p.category} / {p.slug}</dd><dt>材质 / 规格</dt><dd>{p.material} / {p.specification}</dd>
           <dt>重量</dt><dd>{p.weightGrams} g</dd><dt>说明</dt><dd>{p.description}</dd><dt>养护</dt><dd>{p.care}</dd></dl>
       </details>) : data.policies.slice(page*10,page*10+10).map(p=><details key={p.sourceId}>
-        <summary><span className="demo-badge">{p.visibility==="STAFF"?"员工限定":"客户可见"}</span> {p.sourceId} · {p.title}</summary>
+        <summary><span className="demo-badge" data-visibility={p.visibility}>{p.visibility==="STAFF"?"员工限定":"客户可见"}</span> {p.sourceId} · {p.title}</summary>
         <p className="demo-policy-text">{p.content}</p>
       </details>)}</div>
       <div className="demo-actions"><button className="text-button" disabled={page===0} onClick={()=>setPage(p=>p-1)}>上一页</button>
