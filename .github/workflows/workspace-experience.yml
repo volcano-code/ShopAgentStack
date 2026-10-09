@@ -31,22 +31,10 @@ jobs:
           npm --prefix apps/web ci
           npm --prefix apps/web run test:unit
           npm --prefix apps/web run build
-      - name: Record dependency advisory details (diagnostic, not a security pass)
-        run: |
-          set +e
-          npm --prefix apps/web audit --json > .local/workspace-experience/npm-audit.json
-          code=$?
-          set -e
-          test "$code" -eq 0 -o "$code" -eq 1
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          report = json.loads(Path('.local/workspace-experience/npm-audit.json').read_text())
-          assert 'metadata' in report and 'vulnerabilities' in report, 'Audit response unavailable'
-          print(json.dumps(report['metadata']['vulnerabilities'], sort_keys=True))
-          if report['metadata']['vulnerabilities'].get('high', 0) or report['metadata']['vulnerabilities'].get('critical', 0):
-              print('::warning::Unresolved high/critical dependency advisories; artifact records details. No security clearance claimed.')
-          PY
+      - name: Block high/critical advisories and unavailable audit evidence
+        run: >-
+          python -m tools.shop_quality.npm_audit_gate
+          --project apps/web --out .local/workspace-experience/dependency-audit
       - name: Browser interaction with synthetic APIs (no model calls)
         run: |
           cd apps/web
@@ -62,7 +50,7 @@ jobs:
           path: |
             .local/workspace-experience/source.txt
             .local/workspace-experience/browser.xml
-            .local/workspace-experience/npm-audit.json
+            .local/workspace-experience/dependency-audit/
             .local/workspace-experience/assistant-390.png
             .local/workspace-experience/assistant-1440.png
           if-no-files-found: error
