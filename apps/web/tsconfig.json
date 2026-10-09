@@ -28,6 +28,8 @@
     "review-tests",
     "playwright.review.config.ts",
     "workspace-tests",
-    "playwright.workspace.config.ts"
+    "playwright.workspace.config.ts",
+    "delivery-tests",
+    "playwright.delivery.config.ts"
   ]
 }

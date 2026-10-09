@@ -31,6 +31,18 @@ jobs:
           npm --prefix apps/web ci
           npm --prefix apps/web run test:unit
           npm --prefix apps/web run build
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 5ebbf627d6fa62302045b10452e8a87d6c45e774
+          path: .local/bundle-baseline
+          persist-credentials: false
+      - name: Compare static entry closure against the fixed pre-split source
+        run: |
+          mkdir -p .local/frontend-delivery
+          git -C .local/bundle-baseline rev-parse HEAD HEAD^{tree} > .local/frontend-delivery/baseline-source.txt
+          npm --prefix .local/bundle-baseline/apps/web ci
+          npm --prefix .local/bundle-baseline/apps/web run build -- --manifest
+          node apps/web/scripts/bundle-budget.mjs --dist apps/web/dist --baseline-dist .local/bundle-baseline/apps/web/dist --out .local/frontend-delivery/bundle.json
       - name: Block high/critical advisories and unavailable audit evidence
         run: >-
           python -m tools.shop_quality.npm_audit_gate
@@ -40,6 +52,11 @@ jobs:
           cd apps/web
           npx --no-install playwright install --with-deps chromium
           npm run test:workspace
+      - name: Verify production lazy chunks and manual recovery (synthetic APIs)
+        run: npm --prefix apps/web run test:delivery
+      - name: Require executed production delivery tests
+        if: always()
+        run: python -m tools.shop_quality.junit_gate --root .local/frontend-delivery --pattern browser.xml
       - name: Require executed browser tests
         if: always()
         run: python -m tools.shop_quality.junit_gate --root .local/workspace-experience --pattern browser.xml
@@ -49,6 +66,9 @@ jobs:
           name: workspace-experience
           path: |
             .local/workspace-experience/source.txt
+            .local/frontend-delivery/baseline-source.txt
+            .local/frontend-delivery/bundle.json
+            .local/frontend-delivery/browser.xml
             .local/workspace-experience/browser.xml
             .local/workspace-experience/dependency-audit/
             .local/workspace-experience/assistant-390.png
