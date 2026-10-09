@@ -25,7 +25,7 @@ jobs:
           git ls-files -s > artifacts/source/tree.txt
           git archive --format=zip --output=artifacts/source/source.zip HEAD
           sha256sum artifacts/source/source.zip > artifacts/source/SHA256SUMS
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: business-source
           path: artifacts/source/
@@ -79,7 +79,7 @@ jobs:
       - name: Retry cleanup of only this owned disposable project
         if: always()
         run: python -m tools.shop_e2e cleanup
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: business-e2e

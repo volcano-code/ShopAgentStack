@@ -53,7 +53,7 @@ jobs:
           test "$code" -eq 1
       - name: Actual SDK smoke trace (synthetic operations, not application tracing)
         run: python -m tools.shop_observability.examples.trace_demo --out artifacts/quality/trace-smoke.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: quality-python-${{ matrix.python }}
@@ -91,7 +91,7 @@ jobs:
         run: npm --prefix apps/web run test:unit
       - name: Existing build already includes tsc --noEmit
         run: npm --prefix apps/web run build
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: web-build
@@ -140,7 +140,7 @@ jobs:
           for test in OrderOwnershipTest CartPricingTest; do
             python -m tools.shop_quality.junit_gate --root services/commerce/mall-portal/target/surefire-reports --pattern "TEST-com.macro.mall.portal.service.${test}.xml"
           done
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: commerce-tests
@@ -188,7 +188,7 @@ jobs:
           if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
             docker rm -f "$CONTAINER_NAME"
           fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: agent-tests-otel-${{ matrix.otel }}
@@ -216,7 +216,7 @@ jobs:
             --out artifacts/required
       - name: Preserve the decision and exact source even on gate failure
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: quality-required-${{ github.run_attempt }}
           path: artifacts/required/
