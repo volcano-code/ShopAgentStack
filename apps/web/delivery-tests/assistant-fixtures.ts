@@ -1,3 +1,4 @@
+import { pagedFixture } from "../test-support/history-fixture";
 /** Public synthetic data only; no model calls or real commerce writes. */
 import type { Page } from "@playwright/test";
 import type { AgentRun } from "../src/agentTransport";
@@ -28,6 +29,8 @@ export async function seedAssistant(page: Page, runs: AgentRun[]) {
       { id: "fixture", label: "合成测试", model: "无模型调用", configured: true, test: true },
     ] } });
     if (path === "/api/agent/sessions") return route.fulfill({ json: runs.length ? [{ id: "history", title: "合成长会话" }, { id: "short", title: "合成短会话" }] : [] });
+    if (path === "/api/agent/sessions/history/history") return route.fulfill({ json: pagedFixture("history", "合成长会话", runs, route.request().url()) });
+    if (path === "/api/agent/sessions/short/history") return route.fulfill({ json: pagedFixture("short", "合成短会话", makeRuns(1), route.request().url()) });
     if (path === "/api/agent/sessions/history") return route.fulfill({ json: { id: "history", title: "合成长会话", runs } });
     if (path === "/api/agent/sessions/short") return route.fulfill({ json: { id: "short", title: "合成短会话", runs: makeRuns(1) } });
     if (path === "/api/agent/runs/history-0/confirm" && route.request().method() === "POST") {

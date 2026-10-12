@@ -1,3 +1,4 @@
+import { pagedFixture } from "../test-support/history-fixture";
 import { test, expect } from "@playwright/test";
 import { resolve } from "node:path";
 
@@ -36,6 +37,7 @@ test("streaming workspace renders Markdown, deduplicates results and restores hi
   });
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === "/api/agent/sessions/synthetic-session/history") return route.fulfill({ json: pagedFixture("synthetic-session", run.input, [run], route.request().url()) });
     const body =
       path === "/api/portal/sso/info"
         ? { code: 200, data: { id: 1, username: "体验用户" } }

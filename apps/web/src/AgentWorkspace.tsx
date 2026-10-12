@@ -4,6 +4,7 @@ import { token } from "./api";
 import { ProductArt, Modal } from "./ui";
 import { AssistantText } from "./AssistantText";
 import { HISTORY_BATCH, historyWindow } from "./assistantHistory";
+import { historyPath, historyPage, mergeHistory, type HistoryLane } from "./historyPaging";
 import "./agent.css";
 import { HandoffButton } from "./Support";
 
@@ -283,12 +284,23 @@ export function AgentWorkspace({
     [busy, setBusy] = useState(false);
   const mutation = useRef(createLatch());
   const selected = useRef(0);
+  const selectionRequest = useRef<AbortController | null>(null);
+  const pageRequest = useRef<AbortController | null>(null);
+  const [loadingSession, setLoadingSession] = useState(false);
+  const [loadingPage, setLoadingPage] = useState(false);
+  const [pageError, setPageError] = useState("");
+  const [pages, setPages] = useState<{ sid: string; history: string | null; attention: string | null; remaining: number } | null>(null);
+  const pageLatch = useRef(createLatch());
+  const pageSeen = useRef(new Set<string>());
+  const attentionIncomplete = !!pages?.attention && pages.sid === session?.id;
+  const readingHistory = loadingSession || loadingPage || attentionIncomplete;
+
   const alive = useRef(true);
   const [connection, setConnection] = useState<Connection>("idle");
   const [streamRevision, setStreamRevision] = useState(0);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [inspectedRun, setInspectedRun] = useState<string | null>(null);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; selected.current++; }; }, []);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; selected.current++; selectionRequest.current?.abort(); pageRequest.current?.abort(); }; }, []);
   const scroller = useRef<HTMLDivElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
@@ -308,7 +320,36 @@ export function AgentWorkspace({
   const recent = history.sid === session?.id ? history.recent : HISTORY_BATCH;
   const visibleHistory = useMemo(() => historyWindow(runs, recent, pendingAction || inspectedRun), [runs, recent, pendingAction, inspectedRun]);
   const historyAnchor = useRef<{ sid: string; top: number; height: number } | null>(null);
+  async function loadHistory(lane: HistoryLane) {
+    if (!session || !pages || pages.sid !== session.id || !pages[lane] || loadingSession || !pageLatch.current.enter()) return;
+    const sid = session.id, version = selected.current, cursor = pages[lane]!;
+    const controller = new AbortController(); pageRequest.current = controller;
+    setLoadingPage(true); setPageError("");
+    try {
+      const value = await requestAgent<unknown>(historyPath(sid, lane, cursor), token("portal"), undefined, undefined,
+        { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]), onUnauthorized: expired });
+      if (controller.signal.aborted || !alive.current || selected.current !== version) return;
+      const page = historyPage(value, sid, lane, cursor);
+      if (page.next_cursor && pageSeen.current.has(`${lane}:${page.next_cursor}`)) throw new Error();
+      if (page.next_cursor) pageSeen.current.add(`${lane}:${page.next_cursor}`);
+      const el = scroller.current;
+      if (el) historyAnchor.current = { sid, top: el.scrollTop, height: el.scrollHeight };
+      followBottom.current = false;
+      setSession(old => old?.id === sid ? { ...old, runs: mergeHistory(old.runs || [], page.runs) } : old);
+      setPages(old => old?.sid === sid ? { ...old, [lane]: page.next_cursor, ...(lane === "attention" ? { remaining: page.remaining } : {}) } : old);
+      if (lane === "history") setHistory(old => ({ sid, recent: (old.sid === sid ? old.recent : HISTORY_BATCH) + HISTORY_BATCH }));
+    } catch {
+      if (!controller.signal.aborted && alive.current && selected.current === version)
+        setPageError("历史加载未完成，现有记录保留。可重试读取或重新打开会话，不会重发业务操作。");
+    } finally {
+      pageLatch.current.leave();
+      if (pageRequest.current === controller) pageRequest.current = null;
+      if (alive.current && selected.current === version) setLoadingPage(false);
+    }
+  }
   function revealHistory() {
+    if (loadingSession || loadingPage) return;
+    if (!visibleHistory.hidden && pages?.history) { void loadHistory("history"); return; }
     const el = scroller.current;
     if (!session || !el) return;
     followBottom.current = false;
@@ -319,7 +360,7 @@ export function AgentWorkspace({
     const anchor = historyAnchor.current, el = scroller.current;
     historyAnchor.current = null;
     if (anchor && el && anchor.sid === session?.id) el.scrollTop = anchor.top + el.scrollHeight - anchor.height;
-  }, [recent, session?.id]);
+  }, [recent, session?.id, runs]);
   const executing = runs.some(active);
   const pendingRequest = useRef<{
     text: string;
@@ -330,12 +371,12 @@ export function AgentWorkspace({
   function replaceRun(run: Run) {
     setSession((s) =>
       s
-        ? { ...s, runs: (s.runs || []).map((r) => (r.id === run.id ? run : r)) }
+        ? { ...s, runs: (s.runs || []).map((r) => (r.id === run.id ? { ...r, ...run } : r)) }
         : s,
     );
   }
   async function removeSession() {
-    if (!deleteTarget || pendingAction || !mutation.current.enter()) return;
+    if (!deleteTarget || pendingAction || readingHistory || !mutation.current.enter()) return;
     setBusy(true);
     setDeleteError("");
     try {
@@ -360,9 +401,17 @@ export function AgentWorkspace({
   }
   async function select(id: string) {
     const version = ++selected.current;
+    selectionRequest.current?.abort(); pageRequest.current?.abort();
+    const controller = new AbortController(); selectionRequest.current = controller;
+    setLoadingSession(true); setLoadingPage(false); setPageError("");
     try {
-      const s = await agent<Session>("/sessions/" + id);
-      if (!alive.current || selected.current !== version) return;
+      const read = async (lane: HistoryLane) => historyPage(await requestAgent<unknown>(historyPath(id, lane), token("portal"), undefined, undefined,
+        { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]), onUnauthorized: expired }), id, lane);
+      const [normal, attention] = await Promise.all([read("history"), read("attention")]);
+      if (controller.signal.aborted || !alive.current || selected.current !== version) return;
+      const s = { id, title: normal.title, runs: mergeHistory(normal.runs, attention.runs) };
+      setPages({ sid: id, history: normal.next_cursor, attention: attention.next_cursor, remaining: attention.remaining });
+      pageSeen.current = new Set([normal.next_cursor && `history:${normal.next_cursor}`, attention.next_cursor && `attention:${attention.next_cursor}`].filter((v): v is string => !!v));
       followBottom.current = true;
       setInspectedRun(null);
       setHistory({ sid: id, recent: HISTORY_BATCH });
@@ -373,6 +422,8 @@ export function AgentWorkspace({
     } catch (e) {
       if (!alive.current || selected.current !== version) return;
       setError((e as Error).message);
+    } finally {
+      if (alive.current && selected.current === version) setLoadingSession(false);
     }
   }
   useEffect(() => {
@@ -423,7 +474,7 @@ export function AgentWorkspace({
       }),
       onSnapshot: snapshot => setSession(current => {
         if (!current || controller.signal.aborted || current.id !== sid) return current;
-        return { ...current, runs: current.runs?.map(run => run.id === liveId ? snapshot : run) };
+        return { ...current, runs: current.runs?.map(run => run.id === liveId ? { ...run, ...snapshot } : run) };
       }),
     });
     return () => controller.abort();
@@ -435,7 +486,7 @@ export function AgentWorkspace({
     if (el && followBottom.current) el.scrollTop = el.scrollHeight;
   }, [runs.at(-1)?.events.length, session?.id]);
   async function send() {
-    if (!message.trim() || busy || executing || pendingAction || !mutation.current.enter()) return;
+    if (!message.trim() || busy || executing || readingHistory || pendingAction || !mutation.current.enter()) return;
     setBusy(true);
     setError("");
     followBottom.current = true;
@@ -486,7 +537,7 @@ export function AgentWorkspace({
     kind: string,
     preview?: Record<string, unknown>,
   ) {
-    if (!mutation.current.enter()) return;
+    if (loadingSession || (kind === "confirm" && readingHistory) || !mutation.current.enter()) return;
     if (pendingAction === run.id && kind !== "reconcile") { mutation.current.leave(); return; }
     setInspectedRun(run.id);
     setBusy(true); setError("");
@@ -529,9 +580,11 @@ export function AgentWorkspace({
           <aside className="agent-history">
             <button
               className="button secondary"
-              disabled={busy || executing || Boolean(pendingAction)}
+              disabled={busy || executing || readingHistory || Boolean(pendingAction)}
               onClick={() => {
                 selected.current++;
+                selectionRequest.current?.abort(); pageRequest.current?.abort();
+                setPages(null); setLoadingSession(false); setLoadingPage(false); setPageError("");
                 setSession(null);
                 sessionStorage.removeItem("shop_agent_stack_session");
                 setError("");
@@ -583,7 +636,7 @@ export function AgentWorkspace({
                 <select
                   aria-label="选择模型服务"
                   value={provider}
-                  disabled={busy || executing || Boolean(pendingAction)}
+                  disabled={busy || executing || readingHistory || Boolean(pendingAction)}
                   onChange={(e) => setProvider(e.target.value)}
                 >
                   {providers.map((p) => (
@@ -650,12 +703,19 @@ export function AgentWorkspace({
                   </div>
                 </div>
               )}
-              {visibleHistory.hidden > 0 && <div className="agent-history-window">
-                <button type="button" className="button secondary" onClick={revealHistory}>
-                  显示更早的对话（还有 {visibleHistory.hidden} 轮）
+              {(visibleHistory.hidden > 0 || (pages?.sid === session?.id && pages?.history)) && <div className="agent-history-window">
+                <button type="button" className="button secondary" disabled={loadingSession || loadingPage} onClick={revealHistory}>
+                  {loadingPage ? "正在读取历史…" : "显示更早的对话"}
                 </button>
-                <small>仅折叠较早的已结束记录，不删除内容，不改变模型上下文。待处理操作始终显示。</small>
+                <small>历史按需读取，不删除内容，不改变模型上下文；需关注的旧操作单独读取。</small>
               </div>}
+              {attentionIncomplete && <div className="agent-history-window" role="status">
+                <strong>还有 {pages?.remaining} 轮需关注记录未加载</strong>
+                <small>包含待确认、结果待核实或中断记录。请先读取全部需关注记录，再发送或确认操作。</small>
+                <button type="button" className="button secondary" disabled={loadingPage || loadingSession} onClick={() => void loadHistory("attention")}>读取更多待处理记录</button>
+              </div>}
+              {loadingSession && <p role="status">正在读取会话历史…</p>}
+              {pageError && <p className="error" role="alert">{pageError}</p>}
               {visibleHistory.visible.map((run) => (
                 <article className="agent-turn" key={run.id} data-run-id={run.id}>
                   <div className="agent-user">{run.input}</div>
@@ -714,7 +774,7 @@ export function AgentWorkspace({
                             <div className="agent-actions">
                               <button
                                 className="button"
-                                disabled={busy || pendingAction === run.id}
+                                disabled={busy || readingHistory || pendingAction === run.id}
                                 onClick={() =>
                                   void action(run, "confirm", e.data)
                                 }
@@ -723,7 +783,7 @@ export function AgentWorkspace({
                               </button>
                               <button
                                 className="button secondary"
-                                disabled={busy || pendingAction === run.id}
+                                disabled={busy || loadingSession || pendingAction === run.id}
                                 onClick={() => void action(run, "stop")}
                               >
                                 取消申请
@@ -741,7 +801,7 @@ export function AgentWorkspace({
                     {run.status === "UNCERTAIN" && (
                       <button
                         className="button secondary"
-                        disabled={busy}
+                        disabled={busy || readingHistory}
                         onClick={() => void action(run, "reconcile")}
                       >
                         核实提交结果
@@ -750,7 +810,7 @@ export function AgentWorkspace({
                     {["QUEUED", "RUNNING"].includes(run.status) && (
                       <button
                         className="text-button"
-                        disabled={busy || pendingAction === run.id}
+                        disabled={busy || loadingSession || pendingAction === run.id}
                         onClick={() => void action(run, "stop")}
                       >
                         <Square size={12} />
@@ -816,6 +876,7 @@ export function AgentWorkspace({
                   disabled={
                     busy ||
                     executing ||
+                    readingHistory ||
                     Boolean(pendingAction) ||
                     !message.trim() ||
                     !providers.find((p) => p.id === provider)?.configured

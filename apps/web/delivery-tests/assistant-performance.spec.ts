@@ -48,6 +48,6 @@ test("assistant performance samples (production, synthetic APIs, fresh contexts)
     schema: 'shop.assistant-performance.v1', mode: baseline ? 'baseline' : 'current',
     browser: browser.version(), viewport: { width: 1440, height: 1000 }, manifestSha256,
     syntheticApis: true, modelCalls: false, throttling: 'none', cache: 'fresh context; request routing disables HTTP cache', samples,
-    caveat: 'Three cold-context loopback lab samples per scenario. Timings include browser/frontend and synthetic API dispatch; not real server/model latency, field LCP/INP, or statistically proven speedup. Session response still contains full history.',
+    caveat: 'Three cold-context loopback lab samples per scenario. Timings include browser/frontend and synthetic API dispatch; not real server/model latency, field LCP/INP, or statistically proven speedup. Current UI uses bounded history pages; the fixed baseline retains its legacy full-history response. This is a synthetic API measurement, not real database latency.',
   }, null, 2) + '\n', { flag: 'wx' });
 });

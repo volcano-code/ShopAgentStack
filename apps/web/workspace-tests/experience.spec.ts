@@ -1,3 +1,4 @@
+import { pagedFixture } from "../test-support/history-fixture";
 import { test, expect, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
@@ -24,9 +25,10 @@ async function setup(page: Page, mode: string) {
     if (path === "/api/agent/settings") return route.fulfill({ json: settings });
     if (path === "/api/agent/sessions") return route.fulfill({ json: mode === "empty" ? [] : mode === "race" ? [{ id: "slow", title: "较早的会话" }, { id: "fast", title: "最新会话" }] : [{ id: "s", title: "订单与售后" }] });
     if (path.startsWith("/api/agent/sessions/") && !path.endsWith("/runs")) {
-      const sid = path.split("/").at(-1);
+      const sid = path.split("/")[4];
       if (sid === "slow") await new Promise(resolve => setTimeout(resolve, 250));
-      return route.fulfill({ json: { id: sid, title: "测试会话", runs: mode === "race" ? [{ ...stored, status: "COMPLETED", input: sid === "slow" ? "不能覆盖新会话" : "这是最新会话", events: [] }] : [stored] } });
+      const runs = mode === "race" ? [{ ...stored, status: "COMPLETED", input: sid === "slow" ? "不能覆盖新会话" : "这是最新会话", events: [] }] : [stored];
+      return route.fulfill({ json: path.endsWith("/history") ? pagedFixture(sid!, "测试会话", runs, route.request().url()) : { id: sid, title: "测试会话", runs } });
     }
     if (path.endsWith("/events")) {
       counts.events++;

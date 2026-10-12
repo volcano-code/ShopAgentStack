@@ -1,3 +1,4 @@
+import { pagedFixture } from "../test-support/history-fixture";
 import { test, expect } from "@playwright/test";
 
 test("delete conversation requires confirmation, handles conflicts and clears selection", async ({ page }) => {
@@ -17,6 +18,7 @@ test("delete conversation requires confirmation, handles conflicts and clears se
       deleted = true;
       return route.fulfill({ json: { deleted: true } });
     }
+    if (path === "/api/agent/sessions/delete-test/history") return route.fulfill({ json: pagedFixture("delete-test", "售后规则咨询", [], route.request().url()) });
     const body = path === "/api/portal/sso/info" ? { code: 200, data: { id: 1, username: "体验用户" } }
       : path === "/api/agent/settings" ? { providers: [], default_provider: "" }
       : path === "/api/agent/sessions" ? (deleted ? [] : [{ id: "delete-test", title: "售后规则咨询" }])
