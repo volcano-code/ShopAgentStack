@@ -24,6 +24,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, request_id TEXT NOT NULL, input TEXT NOT NULL, provider TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL, UNIQUE(session_id,request_id));
                 CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id,id);
+                CREATE INDEX IF NOT EXISTS idx_runs_history ON runs(session_id,created DESC,id DESC);
+                CREATE INDEX IF NOT EXISTS idx_runs_attention ON runs(session_id,created DESC,id DESC) WHERE status NOT IN ('COMPLETED','FAILED','STOPPED');
                 CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(member_id,created);
                 CREATE TABLE IF NOT EXISTS task_context(session_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             """)
@@ -79,6 +81,10 @@ class Store:
         for run in runs:
             run["events"] = self.events(run["id"])
         return {"id":sid,"title":row["title"],"runs":runs}
+
+    def session_page(self, sid, member, *, limit=12, cursor=None, lane="history"):
+        from .history_pages import session_page
+        return session_page(self, sid, member, limit=limit, cursor=cursor, lane=lane, error=StoreError)
 
     def create_run(self, sid, member, request_id, message, provider):
         with self.db() as db:
@@ -146,7 +152,7 @@ class Store:
     def task_context(self, sid, member):
         from .context import empty
         with self.db() as db:
-            if not db.execute("SELECT 1 FROM sessions WHERE id=? AND member_id=?", (sid,member)).fetchone():
+            if not db.execute("SELECT 1 FROM sessions WHERE id=? AND member_id=?",(sid,member)).fetchone():
                 raise StoreError("会话不存在或无权访问",404)
             row = db.execute("SELECT payload FROM task_context WHERE session_id=?", (sid,)).fetchone()
         return json.loads(row["payload"]) if row else empty()

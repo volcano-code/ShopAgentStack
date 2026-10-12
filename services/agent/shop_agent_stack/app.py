@@ -2,7 +2,8 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from uuid import UUID
-from fastapi import FastAPI, Header, HTTPException, Request
+from typing import Literal
+from fastapi import FastAPI, Header, HTTPException, Request, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from .business import identity, java, BusinessError
@@ -138,6 +139,16 @@ async def create_session(authorization: str=Header(default="")):
 async def get_session(sid: str, authorization: str=Header(default="")):
     auth=await identity(authorization)
     return store.session(sid,auth["memberId"])
+
+
+@app.get("/sessions/{sid}/history")
+async def get_history(sid: str, limit: int=Query(default=12,ge=1,le=50),
+                      cursor: str | None=Query(default=None,min_length=1,max_length=512),
+                      lane: Literal["history", "attention"]="history",
+                      authorization: str=Header(default="")):
+    auth=await identity(authorization)
+    page=await asyncio.to_thread(store.session_page, sid, auth["memberId"], limit=limit, cursor=cursor, lane=lane)
+    return JSONResponse(page, headers={"Cache-Control":"no-store"})
 
 
 @app.delete("/sessions/{sid}")
