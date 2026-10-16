@@ -111,6 +111,33 @@ class Store:
         result["events"] = self.events(rid)
         return result
 
+    def run_status(self, rid, member):
+        """Owner-scoped status lookup; never materializes the event stream."""
+        with self.db() as db:
+            row = db.execute("SELECT r.status FROM runs r JOIN sessions s ON s.id=r.session_id "
+                             "WHERE r.id=? AND s.member_id=?", (rid, member)).fetchone()
+        if row is None:
+            raise StoreError("执行不存在或无权访问", 404)
+        return row["status"]
+
+    def events_page(self, rid, member, *, after=0, limit=100):
+        """Bounded, owner-scoped event page. Cursor is a position, not authorization."""
+        if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 100:
+            raise StoreError("事件分页参数无效", 400)
+        with self.db() as db:
+            db.execute("BEGIN")
+            owner = db.execute("SELECT 1 FROM runs r JOIN sessions s ON s.id=r.session_id "
+                               "WHERE r.id=? AND s.member_id=?", (rid, member)).fetchone()
+            if owner is None:
+                raise StoreError("执行不存在或无权访问", 404)
+            rows = db.execute("SELECT id,kind,payload FROM events WHERE run_id=? AND id>? "
+                              "ORDER BY id LIMIT ?", (rid, after, limit + 1)).fetchall()
+        more = len(rows) > limit
+        page = rows[:limit]
+        return {"events": [{"id": r["id"], "kind": r["kind"], "data": json.loads(r["payload"])}
+                           for r in page],
+                "next_after": page[-1]["id"] if page else after, "has_more": more}
+
     def events(self, rid, after=0):
         with self.db() as db:
             return [{"id":r["id"],"kind":r["kind"],"data":json.loads(r["payload"])} for r in db.execute("SELECT * FROM events WHERE run_id=? AND id>? ORDER BY id",(rid,after))]
