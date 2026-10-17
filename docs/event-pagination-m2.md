@@ -10,6 +10,10 @@ This is the first M2.2 backend increment, not the completed event-pagination mil
 
 ## Limits, next work
 
-This is **not** per-run byte-level boundedness; a single event payload can still be large. Legacy `Store.run`, `Store.session` and `history_pages.py` still materialize full events for backward compatibility. The frontend has not switched to paged retrieval. A subsequent change must introduce event byte limits, preserve preview/confirmation independently of UI pages, and migrate the workspace with browser regression tests. This change does not alter Java authority, confirmations or payment/refund behavior.
+This adds a 128 KiB single-event write cap and 192 KiB byte budget per paged response. Old oversized rows are retained, represented by an explicit display-only error event on this API; the original data is not silently destroyed. Legacy `Store.run`, `Store.session` and `history_pages.py` still materialize full events for backward compatibility. The frontend has not switched to paged retrieval. A subsequent change must introduce event byte limits, preserve preview/confirmation independently of UI pages, and migrate the workspace with browser regression tests. This change does not alter Java authority, confirmations or payment/refund behavior.
 
 No paid model calls. Validate with locked Agent tests and Workspace experience CI; real browser/Compose CI belongs to the exact new commit, not the parent.
+
+## CI regression correction
+
+The first M2.2 PR's terminal-event test incorrectly assumed one 100-event page covered a 232-event run; it now exhausts all pages before asserting the final state. This update also fixes SSE line termination: a frame is separated by real LF characters, not literal backslash-n sequences. The regression checks real async generator output.

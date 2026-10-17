@@ -196,7 +196,7 @@ async def event_page(rid: str, after: int=Query(default=0,ge=0),
 @app.get("/runs/{rid}/events")
 async def events(rid: str,request: Request,after: int=0,authorization: str=Header(default="")):
     auth=await identity(authorization)
-    store.run(rid,auth["memberId"])
+    await asyncio.to_thread(store.run_status, rid, auth["memberId"])
     async def stream():
         cursor=max(after,0)
         for _ in range(240):
@@ -209,7 +209,7 @@ async def events(rid: str,request: Request,after: int=0,authorization: str=Heade
                 for event in page["events"]:
                     if await request.is_disconnected():
                         return
-                    yield f"id: {event['id']}\\ndata: {json.dumps(event,ensure_ascii=False)}\\n\\n"
+                    yield f"id: {event['id']}\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
                     cursor=event["id"]
                 if not page["has_more"]:
                     break
@@ -221,11 +221,11 @@ async def events(rid: str,request: Request,after: int=0,authorization: str=Heade
                     for event in tail["events"]:
                         if await request.is_disconnected():
                             return
-                        yield f"id: {event['id']}\\ndata: {json.dumps(event,ensure_ascii=False)}\\n\\n"
+                        yield f"id: {event['id']}\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
                         cursor=event["id"]
                     if not tail["has_more"]:
                         return
-            yield ": heartbeat\\n\\n"
+            yield ": heartbeat\n\n"
             await asyncio.sleep(.5)
     return StreamingResponse(stream(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 
