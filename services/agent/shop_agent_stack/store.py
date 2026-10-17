@@ -6,6 +6,11 @@ import time
 from contextlib import contextmanager
 from uuid import uuid4
 
+# Bound persisted events and read-back responses; legacy oversized rows stay in SQLite.
+MAX_EVENT_BYTES = 128 * 1024
+MAX_PAGE_BYTES = 192 * 1024
+MAX_EVENTS_PER_PAGE = 100
+
 
 class StoreError(Exception):
     def __init__(self, message, code=409):
@@ -46,7 +51,10 @@ class Store:
 
     @staticmethod
     def _event(db, run_id, kind, payload):
-        db.execute("INSERT INTO events(run_id,kind,payload) VALUES(?,?,?)", (run_id,kind,json.dumps(payload,ensure_ascii=False)))
+        serialized = json.dumps(payload, ensure_ascii=False)
+        if len(serialized.encode("utf-8")) > MAX_EVENT_BYTES or len(kind.encode("utf-8")) > 128:
+            raise StoreError("事件内容超过单条大小限制", 400)
+        db.execute("INSERT INTO events(run_id,kind,payload) VALUES(?,?,?)", (run_id, kind, serialized))
 
     def sessions(self, member):
         with self.db() as db:
@@ -82,9 +90,10 @@ class Store:
             run["events"] = self.events(run["id"])
         return {"id":sid,"title":row["title"],"runs":runs}
 
-    def session_page(self, sid, member, *, limit=12, cursor=None, lane="history"):
+    def session_page(self, sid, member, *, limit=12, cursor=None, lane="history", summary_only=False):
         from .history_pages import session_page
-        return session_page(self, sid, member, limit=limit, cursor=cursor, lane=lane, error=StoreError)
+        return session_page(self, sid, member, limit=limit, cursor=cursor, lane=lane,
+                            summary_only=summary_only, error=StoreError)
 
     def create_run(self, sid, member, request_id, message, provider):
         with self.db() as db:
@@ -109,6 +118,74 @@ class Store:
             raise StoreError("执行不存在或无权访问",404)
         result = dict(row)
         result["events"] = self.events(rid)
+        return result
+
+    def run_header(self, rid, member):
+        """Owner-scoped metadata for read-only recovery; no event materialization."""
+        with self.db() as db:
+            row = db.execute("SELECT r.* FROM runs r JOIN sessions s ON s.id=r.session_id "
+                             "WHERE r.id=? AND s.member_id=?", (rid, member)).fetchone()
+        if row is None:
+            raise StoreError("执行不存在或无权访问", 404)
+        return dict(row, events=[], events_complete=False)
+
+    def run_status(self, rid, member):
+        """Owner-scoped status lookup; never materializes the event stream."""
+        with self.db() as db:
+            row = db.execute("SELECT r.status FROM runs r JOIN sessions s ON s.id=r.session_id "
+                             "WHERE r.id=? AND s.member_id=?", (rid, member)).fetchone()
+        if row is None:
+            raise StoreError("执行不存在或无权访问", 404)
+        return row["status"]
+
+    def events_page(self, rid, member, *, after=0, limit=100):
+        """Owner-scoped, byte- and row-bounded event page.
+
+        Oversized legacy events become explicit display-only error markers. No
+        original events are changed, and cursors still move past their IDs.
+        """
+        if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= MAX_EVENTS_PER_PAGE:
+            raise StoreError("事件分页参数无效", 400)
+        with self.db() as db:
+            db.execute("BEGIN")
+            owner = db.execute("SELECT 1 FROM runs r JOIN sessions s ON s.id=r.session_id "
+                               "WHERE r.id=? AND s.member_id=?", (rid, member)).fetchone()
+            if owner is None:
+                raise StoreError("执行不存在或无权访问", 404)
+            metadata = db.execute(
+                "SELECT id,kind,LENGTH(CAST(payload AS BLOB)) AS size_bytes "
+                "FROM events WHERE run_id=? AND id>? ORDER BY id LIMIT ?",
+                (rid, after, limit + 1)).fetchall()
+            selected = []
+            budget = 48  # envelope overhead; include a generous per-row allowance
+            for row in metadata[:limit]:
+                kind_bytes = len(row["kind"].encode("utf-8"))
+                oversize = row["size_bytes"] > MAX_EVENT_BYTES or kind_bytes > 128
+                estimate = 256 if oversize else row["size_bytes"] + kind_bytes + 256
+                if selected and budget + estimate > MAX_PAGE_BYTES:
+                    break
+                selected.append((row, oversize))
+                budget += estimate
+            ids = [r["id"] for r, omitted in selected if not omitted]
+            payloads = {}
+            if ids:
+                marks = ",".join("?" for _ in ids)
+                payloads = {r["id"]: r["payload"] for r in db.execute(
+                    f"SELECT id,payload FROM events WHERE run_id=? AND id IN ({marks})",
+                    (rid, *ids))}
+        events = []
+        for row, omitted in selected:
+            if omitted:
+                events.append({"id": row["id"], "kind": "error", "data": {
+                    "message": "有一条旧进度记录超过安全读取上限，详情未自动加载；如涉及待确认操作请核实原始业务状态。",
+                    "display_only": True, "oversized": True}})
+            else:
+                events.append({"id": row["id"], "kind": row["kind"],
+                               "data": json.loads(payloads[row["id"]])})
+        more = len(metadata) > len(selected)
+        result = {"events": events, "next_after": events[-1]["id"] if events else after, "has_more": more}
+        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > MAX_PAGE_BYTES:
+            raise StoreError("事件页超出字节预算，请缩小读取范围", 400)
         return result
 
     def events(self, rid, after=0):
