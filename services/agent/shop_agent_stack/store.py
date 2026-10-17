@@ -90,9 +90,10 @@ class Store:
             run["events"] = self.events(run["id"])
         return {"id":sid,"title":row["title"],"runs":runs}
 
-    def session_page(self, sid, member, *, limit=12, cursor=None, lane="history"):
+    def session_page(self, sid, member, *, limit=12, cursor=None, lane="history", summary_only=False):
         from .history_pages import session_page
-        return session_page(self, sid, member, limit=limit, cursor=cursor, lane=lane, error=StoreError)
+        return session_page(self, sid, member, limit=limit, cursor=cursor, lane=lane,
+                            summary_only=summary_only, error=StoreError)
 
     def create_run(self, sid, member, request_id, message, provider):
         with self.db() as db:
@@ -118,6 +119,15 @@ class Store:
         result = dict(row)
         result["events"] = self.events(rid)
         return result
+
+    def run_header(self, rid, member):
+        """Owner-scoped metadata for read-only recovery; no event materialization."""
+        with self.db() as db:
+            row = db.execute("SELECT r.* FROM runs r JOIN sessions s ON s.id=r.session_id "
+                             "WHERE r.id=? AND s.member_id=?", (rid, member)).fetchone()
+        if row is None:
+            raise StoreError("执行不存在或无权访问", 404)
+        return dict(row, events=[], events_complete=False)
 
     def run_status(self, rid, member):
         """Owner-scoped status lookup; never materializes the event stream."""

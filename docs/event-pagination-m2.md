@@ -17,3 +17,12 @@ No paid model calls. Validate with locked Agent tests and Workspace experience C
 ## CI regression correction
 
 The first M2.2 PR's terminal-event test incorrectly assumed one 100-event page covered a 232-event run; it now exhausts all pages before asserting the final state. This update also fixes SSE line termination: a frame is separated by real LF characters, not literal backslash-n sequences. The regression checks real async generator output.
+## M2.2 history-summary follow-up
+
+The existing `GET /sessions/{sid}/history` remains unchanged by default; `summary_only=true` returns the same owner-scoped run metadata/cursor plus empty `events` and `events_complete:false`, without scanning event payload rows. Similarly, `GET /runs/{rid}?summary_only=true` is a read-only metadata endpoint used for lightweight recovery. The previous complete event endpoints still exist for old callers; this avoids silently breaking the current UI.
+
+The UI should request summary history and hydrate visible/attention runs by calling the bounded `/runs/{rid}/events/page` endpoint. A summary response is not evidence that a run's preview or final answer is absent. Future frontend work must suppress confirmation controls until the relevant run's events have been fully read and validated.
+
+## Previously failing regression
+
+The 2026-10-17 CI failed because a new test monkeypatched the module-level `app.store` annotation before application lifespan had assigned it; the test now explicitly allows the initially missing module attribute. That is a test setup problem, not a real SSE failure.

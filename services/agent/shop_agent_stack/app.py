@@ -145,9 +145,11 @@ async def get_session(sid: str, authorization: str=Header(default="")):
 async def get_history(sid: str, limit: int=Query(default=12,ge=1,le=50),
                       cursor: str | None=Query(default=None,min_length=1,max_length=512),
                       lane: Literal["history", "attention"]="history",
+                      summary_only: bool=Query(default=False),
                       authorization: str=Header(default="")):
     auth=await identity(authorization)
-    page=await asyncio.to_thread(store.session_page, sid, auth["memberId"], limit=limit, cursor=cursor, lane=lane)
+    page=await asyncio.to_thread(store.session_page, sid, auth["memberId"],
+                                 limit=limit, cursor=cursor, lane=lane, summary_only=summary_only)
     return JSONResponse(page, headers={"Cache-Control":"no-store"})
 
 
@@ -179,9 +181,11 @@ async def create_run(sid: str,body: Message,authorization: str=Header(default=""
 
 
 @app.get("/runs/{rid}")
-async def get_run(rid: str,authorization: str=Header(default="")):
+async def get_run(rid: str,summary_only: bool=Query(default=False),
+                  authorization: str=Header(default="")):
     auth=await identity(authorization)
-    return store.run(rid,auth["memberId"])
+    return (store.run_header(rid,auth["memberId"]) if summary_only
+            else store.run(rid,auth["memberId"]))
 
 
 @app.get("/runs/{rid}/events/page")

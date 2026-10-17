@@ -133,7 +133,7 @@ async def test_sse_delivers_real_frames_with_terminal_tail(tmp_path, monkeypatch
     class Request:
         async def is_disconnected(self):
             return False
-    monkeypatch.setattr(module, "store", store)
+    monkeypatch.setattr(module, "store", store, raising=False)
     monkeypatch.setattr(module, "identity", identity)
     response = await module.events(rid, Request(), 0, "synthetic-auth")
     frames = [frame async for frame in response.body_iterator]
@@ -144,3 +144,47 @@ async def test_sse_delivers_real_frames_with_terminal_tail(tmp_path, monkeypatch
     assert parsed[-1]["kind"] == "state"
     assert parsed[-1]["data"]["status"] == "COMPLETED"
     assert [e["id"] for e in parsed] == sorted({e["id"] for e in parsed})
+
+
+def test_history_summary_skips_events_and_keeps_attention(tmp_path, monkeypatch):
+    store = Store(str(tmp_path / "summaries.sqlite"))
+    sid = store.new_session(7)["id"]
+    rid, _ = store.create_run(sid, 7, "summary", "test", "fixture")
+    for index in range(240):
+        store.emit(rid, "tool", {"sequence": index})
+    original = store.events(rid)
+    import shop_agent_stack.history_pages as paging
+    def forbidden(*args, **kwargs):
+        raise AssertionError("summary must not decode any event")
+    # Summary should not call the legacy unbounded helper either.
+    monkeypatch.setattr(store, "events", forbidden)
+    summary = store.session_page(sid, 7, lane="attention", summary_only=True)
+    assert summary["runs"][0]["id"] == rid
+    assert summary["runs"][0]["events_complete"] is False
+    assert summary["runs"][0]["events"] == []
+    assert summary["remaining"] == 0
+    assert store.run_header(rid, 7)["events"] == []
+    assert store.run_header(rid, 7)["events_complete"] is False
+    with pytest.raises(StoreError) as exc:
+        store.run_header(rid, 8)
+    assert exc.value.code == 404
+    with pytest.raises(StoreError) as exc:
+        store.session_page(sid, 8, summary_only=True)
+    assert exc.value.code == 404
+    # Existing full-history path is unchanged and still includes exact event payloads.
+    full = store.session_page(sid, 7)
+    assert len(full["runs"][0]["events"]) == len(original)
+    assert "events_complete" not in full["runs"][0]
+
+
+def test_mixed_summary_and_full_pages_preserve_stable_run_cursor(tmp_path):
+    store = Store(str(tmp_path / "cursors.sqlite"))
+    sid = store.new_session(7)["id"]
+    for i in range(5):
+        rid, _ = store.create_run(sid, 7, f"req-{i}", f"input-{i}", "fixture")
+        store.state(rid, "COMPLETED")
+    first = store.session_page(sid, 7, limit=2, summary_only=True)
+    second = store.session_page(sid, 7, limit=2, cursor=first["next_cursor"], summary_only=True)
+    assert len(first["runs"]) == 2 and len(second["runs"]) == 2
+    assert not ({r["id"] for r in first["runs"]} & {r["id"] for r in second["runs"]})
+    assert first["next_cursor"] != second["next_cursor"]
