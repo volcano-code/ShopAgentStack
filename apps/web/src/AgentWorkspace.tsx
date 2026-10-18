@@ -526,7 +526,7 @@ export function AgentWorkspace({
       onEvent: event => setSession(current => {
         if (!current || controller.signal.aborted || current.id !== sid) return current;
         return { ...current, runs: current.runs?.map(run => run.id === liveId ?
-          { ...applyEvent(run, event), ...(event.kind === "state" && !active({ status: String(event.data.status) }) ? { events_complete: true } : {}) }
+          { ...applyEvent(run, event), ...(event.kind === "state" && !["QUEUED", "RUNNING", "CONFIRMING", "STOPPING"].includes(String(event.data.status)) ? { events_complete: true } : {}) }
           : run) };
       }),
       onSnapshot: snapshot => setSession(current => {
