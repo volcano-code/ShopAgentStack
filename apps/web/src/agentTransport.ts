@@ -1,6 +1,7 @@
 /** Host-owned transport only: reconnect GET progress, never replay business mutations. */
 export type RunEvent = { id: number; kind: string; data: Record<string, unknown> };
-export type AgentRun = { id: string; input: string; provider: string; status: string; events: RunEvent[] };
+export type AgentRun = { id: string; input: string; provider: string; status: string; events: RunEvent[];
+  events_complete?: boolean; events_after?: number };
 export type Connection = "connecting" | "live" | "reconnecting" | "paused" | "idle";
 export const isActive = (run: { status: string }) =>
   ["QUEUED", "RUNNING", "CONFIRMING", "STOPPING"].includes(run.status);

@@ -5,6 +5,7 @@ import { ProductArt, Modal } from "./ui";
 import { AssistantText } from "./AssistantText";
 import { HISTORY_BATCH, historyWindow } from "./assistantHistory";
 import { historyPath, historyPage, mergeHistory, type HistoryLane } from "./historyPaging";
+import { eventPage, eventPagePath, mergeEventPage } from "./eventPaging";
 import "./agent.css";
 import { HandoffButton } from "./Support";
 
@@ -286,6 +287,25 @@ export function AgentWorkspace({
   const selected = useRef(0);
   const selectionRequest = useRef<AbortController | null>(null);
   const pageRequest = useRef<AbortController | null>(null);
+  const detailReaders = useRef(new Map<string, AbortController>());
+  const detailFailed = useRef(new Set<string>());
+  const [detailError, setDetailError] = useState<Record<string, boolean>>({});
+  const [detailRevision, setDetailRevision] = useState(0);
+  function cancelDetailReaders() {
+    for (const controller of detailReaders.current.values()) controller.abort();
+    detailReaders.current.clear();
+    detailFailed.current.clear();
+    setDetailError({});
+  }
+  function retryDetail(id: string) {
+    detailFailed.current.delete(id);
+    setDetailError(old => {
+      const next = { ...old };
+      delete next[id];
+      return next;
+    });
+    setDetailRevision(n => n + 1);
+  }
   const [loadingSession, setLoadingSession] = useState(false);
   const [loadingPage, setLoadingPage] = useState(false);
   const [pageError, setPageError] = useState("");
@@ -293,14 +313,15 @@ export function AgentWorkspace({
   const pageLatch = useRef(createLatch());
   const pageSeen = useRef(new Set<string>());
   const attentionIncomplete = !!pages?.attention && pages.sid === session?.id;
-  const readingHistory = loadingSession || loadingPage || attentionIncomplete;
+  const readingHistory = loadingSession || loadingPage || attentionIncomplete ||
+    (session?.runs || []).some(r => r.events_complete === false && !["COMPLETED", "FAILED", "STOPPED"].includes(r.status));
 
   const alive = useRef(true);
   const [connection, setConnection] = useState<Connection>("idle");
   const [streamRevision, setStreamRevision] = useState(0);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [inspectedRun, setInspectedRun] = useState<string | null>(null);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; selected.current++; selectionRequest.current?.abort(); pageRequest.current?.abort(); }; }, []);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; selected.current++; selectionRequest.current?.abort(); pageRequest.current?.abort(); for (const controller of detailReaders.current.values()) controller.abort(); }; }, []);
   const scroller = useRef<HTMLDivElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
@@ -319,6 +340,40 @@ export function AgentWorkspace({
   const [history, setHistory] = useState<{ sid: string | null; recent: number }>({ sid: null, recent: HISTORY_BATCH });
   const recent = history.sid === session?.id ? history.recent : HISTORY_BATCH;
   const visibleHistory = useMemo(() => historyWindow(runs, recent, pendingAction || inspectedRun), [runs, recent, pendingAction, inspectedRun]);
+  // Hydrate visible and actionable summaries only, at most two read-only page
+  // requests at once. Each response is capped by the server's row/byte budget.
+  useEffect(() => {
+    if (!signed || !session || loadingSession || detailReaders.current.size >= 2) return;
+    const sid = session.id, version = selected.current;
+    const visible = new Set(visibleHistory.visible.map(r => r.id));
+    const run = runs.find(r => r.events_complete === false && !active(r) &&
+      (visible.has(r.id) || !["COMPLETED", "FAILED", "STOPPED"].includes(r.status)) &&
+      !detailFailed.current.has(r.id) && !detailReaders.current.has(r.id));
+    if (!run) return;
+    const controller = new AbortController();
+    detailReaders.current.set(run.id, controller);
+    const after = run.events_after ?? 0;
+    void (async () => {
+      try {
+        const value = await requestAgent<unknown>(eventPagePath(run.id, after), token("portal"), undefined, undefined,
+          { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]), onUnauthorized: expired });
+        const page = eventPage(value, after);
+        if (controller.signal.aborted || !alive.current || selected.current !== version) return;
+        setSession(current => current?.id === sid ? {
+          ...current, runs: current.runs?.map(r => r.id === run.id ? mergeEventPage(r, page) : r),
+        } : current);
+      } catch {
+        if (controller.signal.aborted || !alive.current || selected.current !== version) return;
+        detailFailed.current.add(run.id);
+        setDetailError(old => ({ ...old, [run.id]: true }));
+      } finally {
+        detailReaders.current.delete(run.id);
+        if (alive.current && selected.current === version) setDetailRevision(n => n + 1);
+      }
+    })();
+  // Page completion and session selection trigger the next bounded read.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id, signed, loadingSession, runs, visibleHistory, detailRevision]);
   const historyAnchor = useRef<{ sid: string; top: number; height: number } | null>(null);
   async function loadHistory(lane: HistoryLane) {
     if (!session || !pages || pages.sid !== session.id || !pages[lane] || loadingSession || !pageLatch.current.enter()) return;
@@ -401,7 +456,7 @@ export function AgentWorkspace({
   }
   async function select(id: string) {
     const version = ++selected.current;
-    selectionRequest.current?.abort(); pageRequest.current?.abort();
+    selectionRequest.current?.abort(); pageRequest.current?.abort(); cancelDetailReaders();
     const controller = new AbortController(); selectionRequest.current = controller;
     setLoadingSession(true); setLoadingPage(false); setPageError("");
     try {
@@ -470,7 +525,9 @@ export function AgentWorkspace({
       onConnection: setConnection,
       onEvent: event => setSession(current => {
         if (!current || controller.signal.aborted || current.id !== sid) return current;
-        return { ...current, runs: current.runs?.map(run => run.id === liveId ? applyEvent(run, event) : run) };
+        return { ...current, runs: current.runs?.map(run => run.id === liveId ?
+          { ...applyEvent(run, event), ...(event.kind === "state" && !active({ status: String(event.data.status) }) ? { events_complete: true } : {}) }
+          : run) };
       }),
       onSnapshot: snapshot => setSession(current => {
         if (!current || controller.signal.aborted || current.id !== sid) return current;
@@ -537,7 +594,8 @@ export function AgentWorkspace({
     kind: string,
     preview?: Record<string, unknown>,
   ) {
-    if (loadingSession || (kind === "confirm" && readingHistory) || !mutation.current.enter()) return;
+    if (loadingSession || (["confirm", "reconcile"].includes(kind) && readingHistory) ||
+        (kind === "confirm" && run.events_complete === false) || !mutation.current.enter()) return;
     if (pendingAction === run.id && kind !== "reconcile") { mutation.current.leave(); return; }
     setInspectedRun(run.id);
     setBusy(true); setError("");
@@ -583,7 +641,7 @@ export function AgentWorkspace({
               disabled={busy || executing || readingHistory || Boolean(pendingAction)}
               onClick={() => {
                 selected.current++;
-                selectionRequest.current?.abort(); pageRequest.current?.abort();
+                selectionRequest.current?.abort(); pageRequest.current?.abort(); cancelDetailReaders();
                 setPages(null); setLoadingSession(false); setLoadingPage(false); setPageError("");
                 setSession(null);
                 sessionStorage.removeItem("shop_agent_stack_session");
@@ -725,6 +783,13 @@ export function AgentWorkspace({
                       {labels[run.status] || run.status}
                       {run.provider === "fixture" ? " · 非 AI 验收" : ""}
                     </small>
+                    {run.events_complete === false && !active(run) && (
+                      <p className="agent-partial" role="status">
+                        {detailError[run.id] ? "本轮历史记录读取未完成，已有内容保留；不会自动提交任何业务。" :
+                          "正在按页读取本轮历史记录…"}
+                        {detailError[run.id] && <button type="button" className="text-button" onClick={() => retryDetail(run.id)}>重试读取记录</button>}
+                      </p>
+                    )}
                     <Reply run={run} />
                     {run.events
                       .filter((e) => e.kind === "citations")

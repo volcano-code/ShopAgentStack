@@ -7,7 +7,7 @@ export type HistoryPage = { id: string; title: string; lane: HistoryLane; runs: 
 const invalid = () => new Error("历史记录暂时无法读取，请重新打开会话；不会自动提交任何操作。");
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 export function historyPath(sid: string, lane: HistoryLane, cursor: string | null = null): string {
-  const q = new URLSearchParams({ lane, limit: String(HISTORY_PAGE_SIZE) });
+  const q = new URLSearchParams({ lane, limit: String(HISTORY_PAGE_SIZE), summary_only: "true" });
   if (cursor !== null) q.set("cursor", cursor);
   return `/sessions/${encodeURIComponent(sid)}/history?${q}`;
 }
@@ -26,7 +26,8 @@ export function historyPage(value: unknown, sid: string, lane: HistoryLane, curs
   for (const item of value.runs) {
     if (!record(item) || typeof item.id !== "string" || !item.id || ids.has(item.id) || item.session_id !== sid ||
         typeof item.created !== "number" || !Number.isFinite(item.created) || typeof item.input !== "string" ||
-        typeof item.provider !== "string" || typeof item.status !== "string" || !item.status || item.status.length > 64 || !Array.isArray(item.events)) throw invalid();
+        typeof item.provider !== "string" || typeof item.status !== "string" || !item.status || item.status.length > 64 || !Array.isArray(item.events) ||
+        (item.events_complete !== undefined && typeof item.events_complete !== "boolean")) throw invalid();
     if (lane === "attention" && ["COMPLETED", "FAILED", "STOPPED"].includes(item.status)) throw invalid();
     const run = item as HistoryRun;
     if (prior && compareRuns(prior, run) >= 0) throw invalid();
