@@ -1,4 +1,5 @@
 """SQLite event-page contract: bounded reads, identity, terminal tail, stable cursor."""
+import json
 import pytest
 from shop_agent_stack.store import Store, StoreError
 
