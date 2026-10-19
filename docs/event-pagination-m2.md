@@ -26,3 +26,13 @@ The UI should request summary history and hydrate visible/attention runs by call
 ## Previously failing regression
 
 The 2026-10-17 CI failed because a new test monkeypatched the module-level `app.store` annotation before application lifespan had assigned it; the test now explicitly allows the initially missing module attribute. That is a test setup problem, not a real SSE failure.
+
+## M2.2 browser and client contract checks
+
+The frontend validates each read-only event page against the same known event-state
+contract as its SSE parser and rejects over-budget JSON. Workspace regression
+uses a 207-event synthetic history: confirmation cannot be used until all three
+pages have arrived; failed second-page fetches retain existing data and require
+manual read-only retry; no GET implicitly submits a business operation. Tests
+also check a lost explicit confirmation response is reconciled by GET without a
+second POST. This test fixture is not an independent real-provider evaluation.

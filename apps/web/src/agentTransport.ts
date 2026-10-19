@@ -32,7 +32,7 @@ export async function requestAgent<T>(path: string, authorization: string, body?
   options.signal?.throwIfAborted();
   return data;
 }
-function eventValue(value: unknown): RunEvent {
+export function eventValue(value: unknown): RunEvent {
   const e = value as RunEvent;
   if (!e || !Number.isSafeInteger(e.id) || e.id <= 0 || typeof e.kind !== "string" ||
       !e.data || typeof e.data !== "object" || Array.isArray(e.data) ||

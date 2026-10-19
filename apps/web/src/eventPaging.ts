@@ -1,5 +1,5 @@
 /** Owner-scoped read-only run-event pages. Never calls a mutation endpoint. */
-import type { AgentRun, RunEvent } from "./agentTransport";
+import { eventValue, type AgentRun, type RunEvent } from "./agentTransport";
 export const EVENT_PAGE_LIMIT = 100;
 export const EVENT_PAGE_BYTE_LIMIT = 192 * 1024;
 
@@ -13,11 +13,15 @@ export function eventPage(value: unknown, after: number): EventPage {
       value.events.length > EVENT_PAGE_LIMIT || typeof value.has_more !== "boolean" ||
       !Number.isSafeInteger(value.next_after) || Number(value.next_after) < after ||
       (value.events.length === 0 && value.has_more)) throw invalid();
+  // Defend against invalid/injected transport responses before updating UI state.
+  // The server applies the same byte cap before serializing JSON.
+  if (new TextEncoder().encode(JSON.stringify(value)).byteLength > EVENT_PAGE_BYTE_LIMIT) throw invalid();
   let last = after;
-  for (const event of value.events) {
-    if (!record(event) || !Number.isSafeInteger(event.id) || Number(event.id) <= last ||
-        typeof event.kind !== "string" || !record(event.data)) throw invalid();
-    last = Number(event.id);
+  for (const candidate of value.events) {
+    let event: RunEvent;
+    try { event = eventValue(candidate); } catch { throw invalid(); }
+    if (event.id <= last) throw invalid();
+    last = event.id;
   }
   if (Number(value.next_after) !== last) throw invalid();
   return value as EventPage;
