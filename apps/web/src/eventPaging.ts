@@ -1,5 +1,5 @@
 /** Owner-scoped read-only run-event pages. Never calls a mutation endpoint. */
-import { eventValue, type AgentRun, type RunEvent } from "./agentTransport";
+import { eventValue, type AgentRun, type RunEvent } from "./agentTransport.ts";
 export const EVENT_PAGE_LIMIT = 100;
 export const EVENT_PAGE_BYTE_LIMIT = 192 * 1024;
 
