@@ -309,6 +309,9 @@ async def stop(rid: str,authorization: str=Header(default="")):
             await java(f"/shop_agent_stack/agent/operations/{operation_id}/cancel",bearer=authorization,body={})
     except Exception:
         store.state(rid,"UNCERTAIN","取消结果待核实，请核实操作状态")
-        return store.run(rid,auth["memberId"])
+        # Corrupt/oversized legacy previews may make the old full-event route
+        # unusable. Return only owner-scoped state; do not parse or replay the
+        # unsafe log or silently treat cancellation as complete.
+        return store.run_header(rid,auth["memberId"])
     store.state(rid,"STOPPED","已停止；已提交的业务不会被撤销")
     return store.run(rid,auth["memberId"])

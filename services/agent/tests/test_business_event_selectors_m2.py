@@ -206,4 +206,11 @@ async def test_invalid_or_oversized_legacy_previews_fail_before_cancel(tmp_path,
             response = await client.post(f"/runs/{rid}/stop", headers={"Authorization": "owner"}, json={})
         assert response.status_code == 200
         assert response.json()["status"] == "UNCERTAIN"
+        assert response.json()["events_complete"] is False
+        assert response.json()["events"] == []
         assert called == []
+        # The read-only page must preserve a visible warning without decoding
+        # or authorizing the untrusted legacy preview payload.
+        records = store.events_page(rid, 7, after=0, limit=100)["events"]
+        if scenario == "corrupt":
+            assert any(e["kind"] == "error" and e["data"].get("corrupt") for e in records)

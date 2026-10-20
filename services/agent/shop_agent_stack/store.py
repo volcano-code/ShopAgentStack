@@ -259,8 +259,16 @@ class Store:
                     "message": "有一条旧进度记录超过安全读取上限，详情未自动加载；如涉及待确认操作请核实原始业务状态。",
                     "display_only": True, "oversized": True}})
             else:
-                events.append({"id": row["id"], "kind": row["kind"],
-                               "data": json.loads(payloads[row["id"]])})
+                try:
+                    data = json.loads(payloads[row["id"]])
+                    if not isinstance(data, dict):
+                        raise ValueError("event data is not an object")
+                except (ValueError, TypeError):
+                    events.append({"id": row["id"], "kind": "error", "data": {
+                        "message": "一条旧进度记录格式损坏，详情未自动加载；涉及业务操作请核实原始状态。",
+                        "display_only": True, "corrupt": True}})
+                else:
+                    events.append({"id": row["id"], "kind": row["kind"], "data": data})
         more = len(metadata) > len(selected)
         result = {"events": events, "next_after": events[-1]["id"] if events else after, "has_more": more}
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > MAX_PAGE_BYTES:

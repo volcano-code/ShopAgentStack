@@ -91,3 +91,13 @@ The SQLite store now provides owner-scoped `latest_preview`,
 The 16-preview cap is a defensive bound well above this agent's normal tool
 budget, not an application business rule. Tests use synthetic identity and Java
 stubs; the parent branch's real-service CI is separate evidence.
+
+### Corrupt legacy preview return contract
+
+When STOP cannot prove a complete safe set of previews, it records UNCERTAIN
+and returns owner-scoped run *metadata* with `events=[]` and
+`events_complete=false`. This avoids a second unbounded/corrupt-event decode
+after already refusing the cancellation. A read-only event page represents
+invalid JSON/object payload as an explicit display-only error marker, with a
+stable advancing cursor. The original SQLite bytes remain unchanged; this
+marker is never an authorization to confirm or cancel a business operation.
