@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from uuid import UUID
 from typing import Literal
@@ -16,6 +17,37 @@ tasks: dict[str, asyncio.Task] = {}
 
 # The DB admission lease is longer than this outbound request deadline.
 MODEL_PROBE_TIMEOUT_SECONDS = 20
+
+
+def finish_background_run(rid: str, member: int, completed: asyncio.Task):
+    """Consume task failure and recover only QUEUED/RUNNING state.
+
+    Never log exception text, traceback locals, model provider bodies or
+    credentials. This callback may run *after* an explicit stop or confirmation;
+    the SQLite compare-and-swap leaves those business states intact.
+    """
+    outcome = "FAILED"
+    try:
+        error = completed.exception()
+    except asyncio.CancelledError:
+        outcome = "INTERRUPTED"
+    except BaseException as error:
+        logging.getLogger(__name__).warning(
+            "Unable to inspect completed Agent task type=%s", type(error).__name__)
+    else:
+        if error is not None:
+            logging.getLogger(__name__).warning(
+                "Unhandled Agent task failure type=%s", type(error).__name__)
+    try:
+        store.close_abandoned_run(rid, member, outcome)
+    except Exception as error:
+        logging.getLogger(__name__).warning(
+            "Agent task state recovery failed type=%s", type(error).__name__)
+    finally:
+        # Do not remove a replacement mapping in the unlikely event that
+        # an older completed task callback fires late.
+        if tasks.get(rid) is completed:
+            tasks.pop(rid, None)
 store: Store
 preferences: Preferences
 
@@ -207,7 +239,7 @@ async def create_run(sid: str,body: Message,authorization: str=Header(default=""
             # before the user can safely submit a fresh request.
             return store.run(rid,auth["memberId"])
         tasks[rid]=task
-        task.add_done_callback(lambda task:tasks.pop(rid,None))
+        task.add_done_callback(lambda done: finish_background_run(rid, auth["memberId"], done))
     return store.run(rid,auth["memberId"])
 
 
