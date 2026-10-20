@@ -96,3 +96,9 @@ clarification_quality，不应保存实际回答或敏感用户数据。
 
 CI 只在合成观测与合成人工标签上验证这些规则；
 M2.1 的真实模型准确率和完整业务效用仍未完成。
+
+
+复核完整性还要求所有预期轮次都产生真正的 COMPLETED 最终回答。
+若有 FAILED、UNCERTAIN、WAITING_CONFIRMATION 或没有最终回答的轮次，
+即使其余回答均评分，human_rubric_pass_rate 仍为 null，
+只能报告保守下界，不会把失败轮次漏出分母。

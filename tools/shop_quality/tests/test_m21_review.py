@@ -125,3 +125,17 @@ def test_private_review_file_rejects_invalid_and_enforces_permissions(tmp_path):
     completed=tmp_path/"completed.jsonl"
     m21_review.private_bytes(completed,"".join(json.dumps(r)+"\n" for r in verdicts(obs)))
     assert m21_review.score(obs,plan,m21_review.load_review(completed))["complete_human_review"]
+
+
+def test_failed_or_answerless_turn_never_counts_as_complete_human_evaluation():
+    plan,obs=fixture()
+    obs["rows"][1]["status"]="FAILED"
+    partial=m21_review.score(obs,plan,verdicts(obs)[:1])
+    assert partial["human_rubric_pass_rate"] is None
+    assert partial["complete_human_review"] is False
+    obs["rows"][1]["status"]="COMPLETED"
+    obs["rows"][1]["answer_present"]=False
+    obs["rows"][1]["answer_sha256"]=None
+    partial=m21_review.score(obs,plan,verdicts(obs)[:1])
+    assert partial["human_rubric_pass_rate"] is None
+    assert not partial["complete_human_review"]

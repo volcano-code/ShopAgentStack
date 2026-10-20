@@ -148,7 +148,11 @@ def score(report, plan, reviews):
     answered_reviews = [x for x in reviewed if x and type(x["answer_correct"]) is bool]
     accurate = sum(x["answer_correct"] for x in answered_reviews)
     total_rated = len(answered_reviews)
+    # Full accuracy requires every expected turn to have a completed answer.
+    # An automatically failed/empty turn remains a failure in the denominator,
+    # never an implicitly reviewed successful answer.
     complete = report["status"] == "observed" and len(rows) == expected \
+               and len(valid_answered) == expected \
                and total_rated == len(valid_answered)
     citation_rows = [r for r in valid_answered if r.get("citation_ids")]
     cit_ratings = [
