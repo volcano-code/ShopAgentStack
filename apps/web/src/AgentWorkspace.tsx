@@ -523,6 +523,7 @@ export function AgentWorkspace({
       cursor: runs.find(r => r.id === liveId)?.events.at(-1)?.id || 0,
       onUnauthorized: expired,
       onConnection: setConnection,
+      readSnapshot: (rid, auth, signal) => readRunComplete(rid, auth, { signal, onUnauthorized: expired }),
       onEvent: event => setSession(current => {
         if (!current || controller.signal.aborted || current.id !== sid) return current;
         return { ...current, runs: current.runs?.map(run => run.id === liveId ?

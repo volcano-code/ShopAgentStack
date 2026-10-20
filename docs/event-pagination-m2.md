@@ -50,3 +50,13 @@ It never retries the write, refuses a legacy full-event snapshot in place of a
 summary, and refuses to publish an incomplete reconstruction after reaching
 the budget. The existing live SSE EOF handler still uses its legacy full run
 GET and needs a separate compatible migration before declaring M2.2 finished.
+
+## Bounded SSE reconnect in the customer workspace
+
+The workspace passes `readRunComplete` to the SSE transport as an explicit
+read-only recovery callback. After EOF it uses the bounded owner-scoped summary
+plus event pages instead of a full `GET /runs/{id}`; it refuses stale/partial
+recovery and retains already streamed UI content. The generic transport still
+provides its legacy full-run fallback for other callers/tests and is not yet a
+globally enforced removal. Write actions still return legacy full snapshots,
+so end-to-end removal of unbounded reads is not yet claimed.
