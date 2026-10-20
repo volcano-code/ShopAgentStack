@@ -1,6 +1,7 @@
 /** Host-owned transport only: reconnect GET progress, never replay business mutations. */
 export type RunEvent = { id: number; kind: string; data: Record<string, unknown> };
-export type AgentRun = { id: string; input: string; provider: string; status: string; events: RunEvent[] };
+export type AgentRun = { id: string; input: string; provider: string; status: string; events: RunEvent[];
+  events_complete?: boolean; events_after?: number };
 export type Connection = "connecting" | "live" | "reconnecting" | "paused" | "idle";
 export const isActive = (run: { status: string }) =>
   ["QUEUED", "RUNNING", "CONFIRMING", "STOPPING"].includes(run.status);
@@ -31,7 +32,7 @@ export async function requestAgent<T>(path: string, authorization: string, body?
   options.signal?.throwIfAborted();
   return data;
 }
-function eventValue(value: unknown): RunEvent {
+export function eventValue(value: unknown): RunEvent {
   const e = value as RunEvent;
   if (!e || !Number.isSafeInteger(e.id) || e.id <= 0 || typeof e.kind !== "string" ||
       !e.data || typeof e.data !== "object" || Array.isArray(e.data) ||
@@ -112,6 +113,9 @@ type FollowOptions = Options & {
   signal: AbortSignal; cursor?: number; onEvent: (event: RunEvent) => void;
   onSnapshot: (run: AgentRun) => void; onConnection: (state: Connection) => void;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>; idleMs?: number;
+  /** Read-only, bounded recovery supplied by the host. UI must not fetch
+   * unbounded full-run snapshots after SSE disconnect. */
+  readSnapshot?: (id: string, authorization: string, signal: AbortSignal) => Promise<AgentRun>;
 };
 /** At most three subscriptions per invocation. Manual recovery starts a new bounded GET-only invocation. */
 export async function followAgentRun(id: string, authorization: string, options: FollowOptions): Promise<void> {
@@ -164,7 +168,10 @@ export async function followAgentRun(id: string, authorization: string, options:
     // EOF/transport failure is NOT run completion. Read persisted state before deciding.
     try {
       const signal = AbortSignal.any([options.signal, AbortSignal.timeout(20000)]);
-      const run = runValue(await requestAgent<unknown>(base, authorization, undefined, "GET", { ...options, signal }), id);
+      const value = options.readSnapshot
+        ? await options.readSnapshot(id, authorization, signal)
+        : await requestAgent<unknown>(base, authorization, undefined, "GET", { ...options, signal });
+      const run = runValue(value, id);
       if (options.signal.aborted) return;
       const snapshotCursor = run.events.at(-1)?.id || 0;
       if (snapshotCursor < cursor) throw new Error("进度快照暂未同步，请重新读取。");

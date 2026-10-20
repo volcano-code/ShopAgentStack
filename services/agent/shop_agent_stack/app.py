@@ -145,9 +145,11 @@ async def get_session(sid: str, authorization: str=Header(default="")):
 async def get_history(sid: str, limit: int=Query(default=12,ge=1,le=50),
                       cursor: str | None=Query(default=None,min_length=1,max_length=512),
                       lane: Literal["history", "attention"]="history",
+                      summary_only: bool=Query(default=False),
                       authorization: str=Header(default="")):
     auth=await identity(authorization)
-    page=await asyncio.to_thread(store.session_page, sid, auth["memberId"], limit=limit, cursor=cursor, lane=lane)
+    page=await asyncio.to_thread(store.session_page, sid, auth["memberId"],
+                                 limit=limit, cursor=cursor, lane=lane, summary_only=summary_only)
     return JSONResponse(page, headers={"Cache-Control":"no-store"})
 
 
@@ -179,25 +181,54 @@ async def create_run(sid: str,body: Message,authorization: str=Header(default=""
 
 
 @app.get("/runs/{rid}")
-async def get_run(rid: str,authorization: str=Header(default="")):
+async def get_run(rid: str,summary_only: bool=Query(default=False),
+                  authorization: str=Header(default="")):
     auth=await identity(authorization)
-    return store.run(rid,auth["memberId"])
+    return (store.run_header(rid,auth["memberId"]) if summary_only
+            else store.run(rid,auth["memberId"]))
+
+
+@app.get("/runs/{rid}/events/page")
+async def event_page(rid: str, after: int=Query(default=0,ge=0),
+                     limit: int=Query(default=100,ge=1,le=100),
+                     authorization: str=Header(default="")):
+    auth=await identity(authorization)
+    page=await asyncio.to_thread(store.events_page,rid,auth["memberId"],after=after,limit=limit)
+    return JSONResponse(page,headers={"Cache-Control":"no-store"})
 
 
 @app.get("/runs/{rid}/events")
 async def events(rid: str,request: Request,after: int=0,authorization: str=Header(default="")):
     auth=await identity(authorization)
-    store.run(rid,auth["memberId"])
+    await asyncio.to_thread(store.run_status, rid, auth["memberId"])
     async def stream():
         cursor=max(after,0)
         for _ in range(240):
             if await request.is_disconnected():
                 return
-            for event in store.events(rid,cursor):
-                cursor=event["id"]
-                yield f"id: {cursor}\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
-            if store.run(rid,auth["memberId"])["status"] not in ("RUNNING","QUEUED","CONFIRMING"):
-                return
+            # Each DB read is bounded; exhaust the tail before interpreting terminal state.
+            # The cursor advances only after the event has been yielded.
+            while True:
+                page = await asyncio.to_thread(store.events_page, rid, auth["memberId"], after=cursor, limit=100)
+                for event in page["events"]:
+                    if await request.is_disconnected():
+                        return
+                    yield f"id: {event['id']}\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
+                    cursor=event["id"]
+                if not page["has_more"]:
+                    break
+            if await asyncio.to_thread(store.run_status, rid, auth["memberId"]) not in ("RUNNING","QUEUED","CONFIRMING","STOPPING"):
+                # One last read covers events committed after the prior page and
+                # before the observed terminal status. Do not lose final answer.
+                while True:
+                    tail = await asyncio.to_thread(store.events_page, rid, auth["memberId"], after=cursor, limit=100)
+                    for event in tail["events"]:
+                        if await request.is_disconnected():
+                            return
+                        yield f"id: {event['id']}\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
+                        cursor=event["id"]
+                    if not tail["has_more"]:
+                        return
             yield ": heartbeat\n\n"
             await asyncio.sleep(.5)
     return StreamingResponse(stream(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})

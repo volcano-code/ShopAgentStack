@@ -110,3 +110,36 @@ test("perpetually stale snapshots pause without replacing received progress",asy
   return Response.json(run("COMPLETED",[event(1)]));
  }}));assert.equal(streams,3);assert.equal(snapshots.length,0);assert.equal(states.at(-1),"paused");
 });
+
+test("configured SSE read-only recovery calls host bounded reader, not full /runs GET",async()=>{
+  let readerCalls=0; const urls=[];const got=[];
+  const bounded=run("COMPLETED", [event(1), {id:2,kind:"state",data:{status:"COMPLETED"}}]);
+  await followAgentRun("r","synthetic",options({
+    onSnapshot: value => got.push(value),
+    fetcher: async url => {
+      urls.push(url);
+      if(url.includes("/events?")) return response(frame(event(1))+frame({id:2,kind:"state",data:{status:"COMPLETED"}}));
+      throw new Error("Unbounded run endpoint was called");
+    },
+    readSnapshot: async (id,authorization,signal) => {
+      readerCalls++;assert.equal(id,"r");assert.equal(authorization,"synthetic");
+      assert.equal(signal.aborted,false);return bounded;
+    }
+  }));
+  assert.equal(readerCalls,1);assert.equal(got.length,1);
+  assert.deepEqual(got[0],bounded);
+  assert.deepEqual(urls,["/api/agent/runs/r/events?after=0"]);
+});
+test("bounded reader failure cannot replace streamed events or falsely end a run",async()=>{
+  let readerCalls=0;const states=[];
+  await followAgentRun("r","synthetic",options({
+    cursor:5,onConnection:s=>states.push(s),
+    fetcher:async url => {
+      assert.ok(url.includes("/events?"));
+      return response(": heartbeat\\n\\n");
+    },
+    readSnapshot:async()=>{readerCalls++;throw new Error("History exceeds safe budget");},
+  }));
+  assert.equal(readerCalls,3);
+  assert.equal(states.at(-1),"paused");
+});

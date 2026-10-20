@@ -9,9 +9,22 @@ const settings = { nickname: "演示访客", compact: false, default_provider: "
 async function setup(page: Page, mode: string) {
   const preview = { id: 1, kind: "preview", data: { id: "00000000-0000-4000-8000-000000000001", confirmationToken: "synthetic-confirmation-only",
     order_id: 101, amount: 49.9, reason: "合成售后请求", expires_at: new Date(Date.now() + 600000).toISOString() } };
-  const stored: Run = { id: "r", input: "查询订单并了解售后", provider: "fixture", status: mode === "confirm" ? "WAITING_CONFIRMATION" : "RUNNING",
-    events: mode === "confirm" ? [preview] : [{ id: 1, kind: "assistant_delta", data: { message_id: "m", text: "已接收你的请求。" } }] };
-  const counts = { events: 0, confirm: 0, stop: 0, sends: 0, snapshots: 0 };
+  const paged = mode === "paged" || mode === "paged-fail";
+  const syntheticHistory = paged ? [
+    ...Array.from({ length: 206 }, (_, i) => ({
+      id: i + 1, kind: i === 1 ? "assistant" : "tool",
+      data: i === 1 ? { message_id: "pager", text: "历史记录需要按页恢复。" } :
+        { tool_call_id: String(i), name: "list_my_orders", status: "completed" },
+    })),
+    { ...preview, id: 207 },
+  ] : [];
+  const stored: Run = { id: "r", input: "查询订单并了解售后", provider: "fixture", status: mode === "confirm" || paged ? "WAITING_CONFIRMATION" : "RUNNING",
+    events: paged ? syntheticHistory : mode === "confirm" ? [preview] :
+      [{ id: 1, kind: "assistant_delta", data: { message_id: "m", text: "已接收你的请求。" } }] };
+  const counts = { events: 0, confirm: 0, stop: 0, sends: 0, snapshots: 0, pages: 0 };
+  // Control the first page deterministically rather than racing a fixed sleep.
+  let releaseFirstPage!: () => void;
+  const firstPageGate = new Promise<void>(resolve => { releaseFirstPage = resolve; });
   await page.addInitScript((mode) => {
     // Init scripts also run on login navigation. Seed only once per test tab.
     if (sessionStorage.getItem("__workspace_test_seeded")) return;
@@ -28,7 +41,24 @@ async function setup(page: Page, mode: string) {
       const sid = path.split("/")[4];
       if (sid === "slow") await new Promise(resolve => setTimeout(resolve, 250));
       const runs = mode === "race" ? [{ ...stored, status: "COMPLETED", input: sid === "slow" ? "不能覆盖新会话" : "这是最新会话", events: [] }] : [stored];
-      return route.fulfill({ json: path.endsWith("/history") ? pagedFixture(sid!, "测试会话", runs, route.request().url()) : { id: sid, title: "测试会话", runs } });
+      if (path.endsWith("/history")) {
+        const fixture = pagedFixture(sid!, "测试会话", runs, route.request().url());
+        if (paged && new URL(route.request().url()).searchParams.get("summary_only") === "true")
+          fixture.runs = fixture.runs.map(r => ({ ...r, events: [], events_complete: false })) as typeof fixture.runs;
+        return route.fulfill({ json: fixture });
+      }
+      return route.fulfill({ json: { id: sid, title: "测试会话", runs } });
+    }
+    if (path === "/api/agent/runs/r/events/page") {
+      counts.pages++;
+      const after = Number(new URL(route.request().url()).searchParams.get("after") || "0");
+      if (mode === "paged" && counts.pages === 1) await firstPageGate;
+      if (mode === "paged-fail" && counts.pages === 2)
+        return route.fulfill({ status: 503, json: { detail: "synthetic transient read" } });
+      const remaining = stored.events.filter(e => e.id > after);
+      const events = remaining.slice(0, 100);
+      return route.fulfill({ json: { events, next_after: events.at(-1)?.id ?? after,
+        has_more: remaining.length > events.length } });
     }
     if (path.endsWith("/events")) {
       counts.events++;
@@ -40,7 +70,7 @@ async function setup(page: Page, mode: string) {
     }
     if (path === "/api/agent/runs/r/confirm") {
       counts.confirm++; stored.status = "COMPLETED";
-      stored.events.push({ id: 2, kind: "operation", data: { case_id: 501 } });
+      stored.events.push({ id: paged ? 208 : 2, kind: "operation", data: { case_id: 501 } });
       return route.abort("failed"); // Java-equivalent mutation finished; HTTP response is deliberately lost.
     }
     if (path === "/api/agent/runs/r/stop") {
@@ -48,12 +78,16 @@ async function setup(page: Page, mode: string) {
       stored.events.push({ id: 3, kind: "state", data: { status: "STOPPED" } });
       return route.fulfill({ json: stored });
     }
-    if (path === "/api/agent/runs/r") { counts.snapshots++; return route.fulfill({ json: stored }); }
+    if (path === "/api/agent/runs/r") {
+      counts.snapshots++;
+      const summary = new URL(route.request().url()).searchParams.get("summary_only") === "true";
+      return route.fulfill({ json: summary ? { ...stored, events: [], events_complete: false } : stored });
+    }
     if (path.endsWith("/runs") && route.request().method() === "POST") { counts.sends++; return route.fulfill({ json: stored }); }
     return route.fulfill({ status: 404, json: { detail: "test endpoint absent" } });
   });
   await page.goto("/app/assistant");
-  return { stored, counts };
+  return { stored, counts, releaseFirstPage };
 }
 test("early EOF is not completion; bounded reconnect and manual GET recovery", async ({ page }) => {
   const { stored, counts } = await setup(page, "disconnect");
@@ -128,4 +162,38 @@ for (const width of [360, 390, 768]) test(`toolbar controls do not overlap at ${
   expect(labelFits).toBe(true);
   await expect(page.getByLabel("发送消息")).toBeInViewport();
   await handoff.click(); await expect(page.getByRole("heading", { name: "联系人工客服", exact: true })).toBeVisible();
+});
+
+test("paged historical confirmation is gated until all event pages are loaded", async ({ page }) => {
+  const { counts, releaseFirstPage } = await setup(page, "paged");
+  await expect.poll(() => counts.pages).toBeGreaterThan(0);
+  const confirm = page.getByRole("button", { name: "确认提交售后", exact: true });
+  // The first page is blocked until released below: not-visible is now
+  // a meaningful safety assertion, not a timing-dependent observation.
+  await expect(confirm).not.toBeVisible();
+  expect(counts.confirm).toBe(0);
+  releaseFirstPage();
+  await expect(confirm).toBeEnabled();
+  await expect(page.locator(".agent-text")).toContainText("历史记录需要按页恢复。");
+  expect(counts.pages).toBe(3);
+  expect(counts.confirm).toBe(0);
+  // No GET during restoration can be treated as approval. A deliberate click
+  // sends exactly one POST; the lost HTTP response must be reconciled by GET.
+  await page.getByRole("button", { name: "确认提交售后", exact: true }).click();
+  await expect(page.getByRole("button", { name: "读取服务器状态" })).toBeVisible();
+  expect(counts.confirm).toBe(1);
+  await page.getByRole("button", { name: "读取服务器状态" }).click();
+  await expect(page.locator(".agent-success")).toContainText("501");
+  expect(counts.confirm).toBe(1);
+});
+test("failed history event page leaves confirmation unavailable until manual retry", async ({ page }) => {
+  const { counts } = await setup(page, "paged-fail");
+  const retry = page.getByRole("button", { name: "重试读取记录" });
+  await expect(retry).toBeVisible();
+  await expect(page.getByRole("button", { name: "确认提交售后", exact: true })).not.toBeVisible();
+  expect(counts.confirm).toBe(0);
+  await retry.click();
+  await expect(page.getByRole("button", { name: "确认提交售后", exact: true })).toBeEnabled();
+  expect(counts.pages).toBe(4);
+  expect(counts.confirm).toBe(0);
 });
