@@ -101,3 +101,38 @@ SQLite 可能长时间残留 `QUEUED/RUNNING`，阻挡新请求并继续占用�
 可能最终超过阈值。某些服务不返回完整 usage 或忽略输出参数，
 也可能在客户端取消后计费。对真实账单的硬性费用控制必须结合供应商
 配额和实际账单核对，不能仅依赖此本地预算。
+
+## M2.3 第四增量：严格验收和受限性能证据
+
+Agent 的 `Shop quality` 工作流（OpenTelemetry 开/关两种矩阵）
+现新增真实运行的 `tools.shop_quality.m23_evidence` 验收步骤：
+- 解析当前构建实际执行的 `artifacts/agent/tests.xml`，要求
+  M2.3 核心准入、测试连接限流、后台异常收尾、用量审计、回执丢失、
+  取消核实与敏感数据脱敏测试全部执行且通过。
+  **缺失、跳过、重复或失败的必测用例直接使工作流失败**，
+  不能拿旧 CI 或测试名称的字符串存在性代替执行证据。
+- 在 GitHub runner 上以 Python 3.12 运行纯 SQLite 可丢弃基准：
+  `same` 和 `distinct` 两种账号模式，各执行 **5 次**，
+  每次 **40 个请求**、最多 **12 个线程**，
+  实测 429 拒绝数、已准入数、数据库活动数与本地 p50/p95。
+- 输出包含 `checkout_sha`、`tree_sha`、PR head SHA、
+  Python 版本、必测用例身份、每次原始延迟和中位数，
+  文件 `artifacts/agent/m23-admission-evidence.json` 与 JUnit
+  一起存入精确提交关联的 CI artifact。
+- 报告固定标识 **仅限 SQLite 准入锁路径**，
+  `production_capacity_verified=false`、
+  `real_model_called=false`、`end_to_end_latency_verified=false`。
+  不生成真实交易、支付或业务数据；不把这个数字当生产 QPS、
+  实际模型账单或多进程可用性。
+
+复现（已运行过对应 Agent 测试、且仓库包含当前提交时）：
+
+```bash
+PYTHONPATH=services/agent python -m tools.shop_quality.m23_evidence \
+  --junit artifacts/agent/tests.xml \
+  --out artifacts/agent/m23-admission-evidence.json \
+  --requests 40 --workers 12 --trials 5
+```
+
+独立 Java/MCP/MySQL 回执丢失的真实服务测试属于 Business E2E
+的另一份证据，不包含在这个 Python SQLite 量测报告中。
