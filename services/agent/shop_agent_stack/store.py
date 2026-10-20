@@ -220,6 +220,28 @@ class Store:
                     "message": "任务未能启动，请检查模型配置后重新发送"})
             return bool(changed)
 
+    def close_abandoned_run(self, rid, member, outcome="FAILED"):
+        """Finalize ONLY truly unowned QUEUED/RUNNING background work.
+
+        A task callback must never roll back an active STOPPING transition,
+        overwrite WAITING_CONFIRMATION, or claim that an uncertain Java
+        operation failed. A callback can run after an explicit stop and must
+        remain harmless and idempotent.
+        """
+        if outcome not in ("FAILED", "INTERRUPTED"):
+            raise StoreError("无效的后台任务收尾状态", 400)
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._require_run_owner(db, rid, member)
+            updated = db.execute(
+                "UPDATE runs SET status=? WHERE id=? AND status IN ('QUEUED','RUNNING')",
+                (outcome, rid)).rowcount
+            if updated:
+                message = ("后台任务意外中断，请核实运行状态" if outcome == "INTERRUPTED"
+                           else "后台任务异常退出，未能完成本次回答")
+                self._event(db, rid, "state", {"status": outcome, "message": message})
+            return bool(updated)
+
     def run(self, rid, member):
         with self.db() as db:
             row = db.execute("SELECT r.* FROM runs r JOIN sessions s ON s.id=r.session_id WHERE r.id=? AND s.member_id=?",(rid,member)).fetchone()
