@@ -68,3 +68,26 @@ run can still emit the final `STOPPED` state, so the server must not treat
 `STOPPING` as terminal merely because it is not `RUNNING` or `CONFIRMING`.
 A targeted async test checks that the stream remains alive by emitting a
 heartbeat after the queued event while the run is still stopping.
+
+## M2.2 targeted business-state reads (stacked follow-up)
+
+The host's mutation decisions no longer materialize the entire event log merely to
+find a preview or test whether an operation result is already persisted.
+The SQLite store now provides owner-scoped `latest_preview`,
+`cancellation_preview_ids`, and `operation_recorded`. They use a composite
+`(run_id, kind, id)` index and fixed-size, prevalidated preview reads.
+
+- Confirm chooses the latest stored preview, keeps the exact operation-ID match,
+  and preserves the Java confirmation and one-time backend authorization.
+- Reconcile checks persisted operation existence with SQLite JSON filtering, so
+  a known successful business operation is not appended a second time.
+- Stop inspects the *whole* bounded set of previews before cancelling any of
+  them. If a legacy preview is corrupt, oversized, or the number exceeds 16,
+  the run transitions to UNCERTAIN rather than cancelling an arbitrary subset.
+- All three endpoints still return their original full run response for backward
+  compatibility. This change is **not** a claim that all legacy event reads have
+  been eliminated, nor does it authorize new business operations.
+
+The 16-preview cap is a defensive bound well above this agent's normal tool
+budget, not an application business rule. Tests use synthetic identity and Java
+stubs; the parent branch's real-service CI is separate evidence.

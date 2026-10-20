@@ -10,6 +10,9 @@ from uuid import uuid4
 MAX_EVENT_BYTES = 128 * 1024
 MAX_PAGE_BYTES = 192 * 1024
 MAX_EVENTS_PER_PAGE = 100
+# A normal run cannot produce anywhere near this many business previews.
+# A corrupt legacy run must fail closed rather than issue unlimited cancellations.
+MAX_CANCELLATION_PREVIEWS = 16
 
 
 class StoreError(Exception):
@@ -29,6 +32,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, request_id TEXT NOT NULL, input TEXT NOT NULL, provider TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL, UNIQUE(session_id,request_id));
                 CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id,id);
+                CREATE INDEX IF NOT EXISTS idx_events_kind ON events(run_id,kind,id DESC);
                 CREATE INDEX IF NOT EXISTS idx_runs_history ON runs(session_id,created DESC,id DESC);
                 CREATE INDEX IF NOT EXISTS idx_runs_attention ON runs(session_id,created DESC,id DESC) WHERE status NOT IN ('COMPLETED','FAILED','STOPPED');
                 CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(member_id,created);
@@ -128,6 +132,81 @@ class Store:
         if row is None:
             raise StoreError("执行不存在或无权访问", 404)
         return dict(row, events=[], events_complete=False)
+
+
+    @staticmethod
+    def _require_run_owner(db, rid, member):
+        row = db.execute(
+            "SELECT 1 FROM runs r JOIN sessions s ON s.id=r.session_id "
+            "WHERE r.id=? AND s.member_id=?", (rid, member)).fetchone()
+        if row is None:
+            raise StoreError("执行不存在或无权访问", 404)
+
+    @staticmethod
+    def _parse_preview(payload):
+        """Never let legacy/corrupted preview data authorize a business call."""
+        try:
+            preview = json.loads(payload)
+        except (ValueError, TypeError):
+            raise StoreError("售后预览记录损坏，请核实原始操作状态", 409) from None
+        if (not isinstance(preview, dict) or
+                not isinstance(preview.get("id"), str) or not preview["id"]):
+            raise StoreError("售后预览记录损坏，请核实原始操作状态", 409)
+        return preview
+
+    def latest_preview(self, rid, member):
+        """Fetch only the latest authorized preview; never decode all run events."""
+        with self.db() as db:
+            db.execute("BEGIN")
+            self._require_run_owner(db, rid, member)
+            row = db.execute(
+                "SELECT id,LENGTH(CAST(payload AS BLOB)) AS bytes "
+                "FROM events WHERE run_id=? AND kind='preview' "
+                "ORDER BY id DESC LIMIT 1", (rid,)).fetchone()
+            if row is None:
+                raise StoreError("当前执行没有可确认操作", 409)
+            if row["bytes"] > MAX_EVENT_BYTES:
+                raise StoreError("历史售后预览超出安全读取上限，请核实原始操作状态", 409)
+            payload = db.execute(
+                "SELECT payload FROM events WHERE run_id=? AND id=?",
+                (rid, row["id"])).fetchone()["payload"]
+        return self._parse_preview(payload)
+
+    def cancellation_preview_ids(self, rid, member):
+        """Return all preview IDs only when the whole set fits a strict budget.
+
+        No business cancellation must begin if previews are corrupt, oversized
+        or too numerous. This prevents a partially inspected run from granting
+        implicit permission to cancel just a subset of operations.
+        """
+        with self.db() as db:
+            db.execute("BEGIN")
+            self._require_run_owner(db, rid, member)
+            rows = db.execute(
+                "SELECT id,LENGTH(CAST(payload AS BLOB)) AS bytes "
+                "FROM events WHERE run_id=? AND kind='preview' ORDER BY id "
+                "LIMIT ?", (rid, MAX_CANCELLATION_PREVIEWS + 1)).fetchall()
+            if len(rows) > MAX_CANCELLATION_PREVIEWS:
+                raise StoreError("历史预览数量超过安全核实范围，请核实原始操作状态", 409)
+            if any(row["bytes"] > MAX_EVENT_BYTES for row in rows):
+                raise StoreError("历史售后预览超出安全读取上限，请核实原始操作状态", 409)
+            if not rows:
+                return []
+            marks = ",".join("?" for _ in rows)
+            payloads = {row["id"]: row["payload"] for row in db.execute(
+                f"SELECT id,payload FROM events WHERE run_id=? AND id IN ({marks})",
+                (rid, *(row["id"] for row in rows)))}
+            return [self._parse_preview(payloads[row["id"]])["id"] for row in rows]
+
+    def operation_recorded(self, rid, member, operation_id):
+        """Owner-scoped idempotency evidence without loading any other events."""
+        with self.db() as db:
+            self._require_run_owner(db, rid, member)
+            return db.execute(
+                "SELECT 1 FROM events WHERE run_id=? AND kind='operation' AND "
+                "CASE WHEN json_valid(payload) THEN "
+                "json_extract(payload,'$.id')=? ELSE 0 END LIMIT 1",
+                (rid, operation_id)).fetchone() is not None
 
     def run_status(self, rid, member):
         """Owner-scoped status lookup; never materializes the event stream."""

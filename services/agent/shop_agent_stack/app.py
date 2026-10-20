@@ -247,10 +247,10 @@ class Confirm(BaseModel):
 
 
 async def reconcile_run(run,auth):
-    preview=preview_of(run)
+    preview=store.latest_preview(run["id"],auth["memberId"])
     op=await java("/shop_agent_stack/internal/agent/operations/"+preview["id"],execution=auth["executionToken"])
     if op["status"]=="SUCCEEDED":
-        if not any(e["kind"]=="operation" and e["data"].get("id")==op["id"] for e in store.events(run["id"])):
+        if not store.operation_recorded(run["id"],auth["memberId"],op["id"]):
             store.emit(run["id"],"operation",op)
         store.state(run["id"],"COMPLETED","业务提交已核实")
     elif op["status"] == "CANCELLED" or op.get("expired"):
@@ -263,12 +263,12 @@ async def reconcile_run(run,auth):
 @app.post("/runs/{rid}/confirm")
 async def confirm(rid: str,body: Confirm,authorization: str=Header(default="")):
     auth=await identity(authorization)
-    run=store.run(rid,auth["memberId"])
-    preview=preview_of(run)
+    run=store.run_header(rid,auth["memberId"])
+    preview=store.latest_preview(rid,auth["memberId"])
     if str(body.operation_id)!=preview["id"]:
         raise HTTPException(400,"确认操作与预览不匹配")
     if run["status"]=="COMPLETED":
-        return run
+        return store.run(rid,auth["memberId"])
     store.begin_confirm(rid)
     try:
         await java(f"/shop_agent_stack/agent/operations/{preview['id']}/confirm",bearer=authorization,body={"confirmationToken":body.confirmation_token})
@@ -284,7 +284,7 @@ async def confirm(rid: str,body: Confirm,authorization: str=Header(default="")):
 @app.post("/runs/{rid}/reconcile")
 async def reconcile(rid: str,authorization: str=Header(default="")):
     auth=await identity(authorization)
-    run=store.run(rid,auth["memberId"])
+    run=store.run_header(rid,auth["memberId"])
     if run["status"] != "UNCERTAIN":
         raise HTTPException(409,"仅待核实状态需要核对结果，请刷新会话")
     return await reconcile_run(run,auth)
@@ -293,7 +293,7 @@ async def reconcile(rid: str,authorization: str=Header(default="")):
 @app.post("/runs/{rid}/stop")
 async def stop(rid: str,authorization: str=Header(default="")):
     auth=await identity(authorization)
-    run=store.run(rid,auth["memberId"])
+    run=store.run_header(rid,auth["memberId"])
     if run["status"] in ("CONFIRMING","UNCERTAIN"):
         raise HTTPException(409,"业务提交结果需要先核实，停止对话不能撤销业务")
     if run["status"] not in ("RUNNING","QUEUED","WAITING_CONFIRMATION"):
@@ -303,11 +303,10 @@ async def stop(rid: str,authorization: str=Header(default="")):
         task=tasks[rid]
         task.cancel()
         await asyncio.gather(task,return_exceptions=True)
-    run=store.run(rid,auth["memberId"])
     try:
-        for event in run["events"]:
-            if event["kind"]=="preview":
-                await java(f"/shop_agent_stack/agent/operations/{event['data']['id']}/cancel",bearer=authorization,body={})
+        preview_ids = store.cancellation_preview_ids(rid,auth["memberId"])
+        for operation_id in preview_ids:
+            await java(f"/shop_agent_stack/agent/operations/{operation_id}/cancel",bearer=authorization,body={})
     except Exception:
         store.state(rid,"UNCERTAIN","取消结果待核实，请核实操作状态")
         return store.run(rid,auth["memberId"])
