@@ -60,3 +60,11 @@ recovery and retains already streamed UI content. The generic transport still
 provides its legacy full-run fallback for other callers/tests and is not yet a
 globally enforced removal. Write actions still return legacy full snapshots,
 so end-to-end removal of unbounded reads is not yet claimed.
+
+## STOPPING stream semantics
+
+The agent SSE stream now keeps `STOPPING` in its active-state set. A stopping
+run can still emit the final `STOPPED` state, so the server must not treat
+`STOPPING` as terminal merely because it is not `RUNNING` or `CONFIRMING`.
+A targeted async test checks that the stream remains alive by emitting a
+heartbeat after the queued event while the run is still stopping.

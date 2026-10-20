@@ -189,3 +189,31 @@ def test_mixed_summary_and_full_pages_preserve_stable_run_cursor(tmp_path):
     assert len(first["runs"]) == 2 and len(second["runs"]) == 2
     assert not ({r["id"] for r in first["runs"]} & {r["id"] for r in second["runs"]})
     assert first["next_cursor"] != second["next_cursor"]
+
+
+@pytest.mark.asyncio
+async def test_sse_stop_in_progress_stays_open_until_terminal_event(tmp_path, monkeypatch):
+    """STOPPING is active: do not close the stream before STOPPED is persisted."""
+    import importlib
+    module = importlib.import_module("shop_agent_stack.app")
+    store = Store(str(tmp_path / "stopping.sqlite"))
+    sid = store.new_session(7)["id"]
+    rid, _ = store.create_run(sid, 7, "stop", "synthetic", "fixture")
+    store.begin_stop(rid)
+    async def identity(_header):
+        return {"memberId": 7}
+    class Request:
+        async def is_disconnected(self):
+            return False
+    monkeypatch.setattr(module, "store", store, raising=False)
+    monkeypatch.setattr(module, "identity", identity)
+    response = await module.events(rid, Request(), 0, "synthetic-auth")
+    stream = response.body_iterator
+    try:
+        first = await anext(stream)
+        assert first.startswith("id: ") and '"QUEUED"' in first
+        # The next frame must be a heartbeat, not premature EOF.
+        heartbeat = await anext(stream)
+        assert heartbeat == ": heartbeat\n\n"
+    finally:
+        await stream.aclose()

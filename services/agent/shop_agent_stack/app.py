@@ -217,7 +217,7 @@ async def events(rid: str,request: Request,after: int=0,authorization: str=Heade
                     cursor=event["id"]
                 if not page["has_more"]:
                     break
-            if await asyncio.to_thread(store.run_status, rid, auth["memberId"]) not in ("RUNNING","QUEUED","CONFIRMING"):
+            if await asyncio.to_thread(store.run_status, rid, auth["memberId"]) not in ("RUNNING","QUEUED","CONFIRMING","STOPPING"):
                 # One last read covers events committed after the prior page and
                 # before the observed terminal status. Do not lose final answer.
                 while True:
