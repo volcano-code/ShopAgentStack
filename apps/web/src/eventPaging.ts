@@ -1,5 +1,5 @@
 /** Owner-scoped read-only run-event pages. Never calls a mutation endpoint. */
-import { eventValue, type AgentRun, type RunEvent } from "./agentTransport.ts";
+import { eventValue, runValue, requestAgent, type AgentRun, type RunEvent } from "./agentTransport.ts";
 export const EVENT_PAGE_LIMIT = 100;
 export const EVENT_PAGE_BYTE_LIMIT = 192 * 1024;
 
@@ -39,4 +39,34 @@ export function mergeEventPage(run: AgentRun, page: EventPage): AgentRun {
 }
 export function eventPagePath(rid: string, after = 0): string {
   return `/runs/${encodeURIComponent(rid)}/events/page?after=${after}&limit=${EVENT_PAGE_LIMIT}`;
+}
+
+/** Explicit manual verification after an uncertain mutation, never a retry of the write.
+ * Bound cumulative memory, time, and calls. If the run is too long, fail
+ * without publishing an incomplete operation/confirmation snapshot.
+ */
+export const MAX_MANUAL_RECOVERY_PAGES = 12;
+export async function readRunComplete(
+  id: string, authorization: string,
+  options: { signal?: AbortSignal; fetcher?: typeof fetch; onUnauthorized?: () => void } = {},
+): Promise<AgentRun> {
+  const signal = AbortSignal.any([
+    ...(options.signal ? [options.signal] : []), AbortSignal.timeout(30000),
+  ]);
+  const url = `/runs/${encodeURIComponent(id)}`;
+  const header = runValue(await requestAgent<unknown>(url + "?summary_only=true", authorization,
+    undefined, "GET", { ...options, signal }), id);
+  if (header.events.length || header.events_complete !== false)
+    throw new Error("服务器未返回只读运行摘要，无法安全核实。");
+  const all: RunEvent[] = [];
+  let cursor = 0;
+  for (let count = 0; count < MAX_MANUAL_RECOVERY_PAGES; count++) {
+    const page = eventPage(await requestAgent<unknown>(eventPagePath(id, cursor),
+      authorization, undefined, "GET", { ...options, signal }), cursor);
+    all.push(...page.events);
+    cursor = page.next_after;
+    if (!page.has_more) return { ...header, events: all, events_after: cursor, events_complete: true };
+  }
+  // Never expose a partial preview as a complete authoritative answer.
+  throw new Error("历史记录超过本次核实读取上限，请保留原操作状态并继续核实。");
 }

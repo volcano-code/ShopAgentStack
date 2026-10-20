@@ -78,7 +78,11 @@ async function setup(page: Page, mode: string) {
       stored.events.push({ id: 3, kind: "state", data: { status: "STOPPED" } });
       return route.fulfill({ json: stored });
     }
-    if (path === "/api/agent/runs/r") { counts.snapshots++; return route.fulfill({ json: stored }); }
+    if (path === "/api/agent/runs/r") {
+      counts.snapshots++;
+      const summary = new URL(route.request().url()).searchParams.get("summary_only") === "true";
+      return route.fulfill({ json: summary ? { ...stored, events: [], events_complete: false } : stored });
+    }
     if (path.endsWith("/runs") && route.request().method() === "POST") { counts.sends++; return route.fulfill({ json: stored }); }
     return route.fulfill({ status: 404, json: { detail: "test endpoint absent" } });
   });

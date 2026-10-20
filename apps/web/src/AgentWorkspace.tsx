@@ -5,7 +5,7 @@ import { ProductArt, Modal } from "./ui";
 import { AssistantText } from "./AssistantText";
 import { HISTORY_BATCH, historyWindow } from "./assistantHistory";
 import { historyPath, historyPage, mergeHistory, type HistoryLane } from "./historyPaging";
-import { eventPage, eventPagePath, mergeEventPage } from "./eventPaging";
+import { eventPage, eventPagePath, mergeEventPage, readRunComplete } from "./eventPaging";
 import "./agent.css";
 import { HandoffButton } from "./Support";
 
@@ -615,7 +615,9 @@ export function AgentWorkspace({
     if (!mutation.current.enter()) return;
     setBusy(true);
     try {
-      const result = await agent<Run>("/runs/" + id);
+      // Read bounded pages; no unbounded run snapshot during uncertain
+      // business-result verification and never retry the original POST.
+      const result = await readRunComplete(id, token("portal"), { onUnauthorized: expired });
       if (!alive.current) return;
       replaceRun(result); setPendingAction(null); setError("");
       setStreamRevision(value => value + 1);

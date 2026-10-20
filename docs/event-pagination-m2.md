@@ -40,3 +40,13 @@ second POST. This test fixture is not an independent real-provider evaluation.
 ### Deterministic browser gating regression
 
 The first page of the 207-event fixture is held by an explicit test-controlled promise. Before releasing it, the confirmation button must be absent and no POST may occur. Once released, all three pages must be read before an intentional confirmation can be sent. This avoids treating arbitrary time delays as security evidence. The separate second-page-failure test checks the user-controlled retry behavior.
+
+## Bounded explicit business-state verification
+
+Manual "读取服务器状态" after an uncertain operation now reads the owner-scoped
+`GET /runs/{id}?summary_only=true` and reconstructs the event record via the
+`/events/page` read-only API (max 12 pages, 30 seconds overall).
+It never retries the write, refuses a legacy full-event snapshot in place of a
+summary, and refuses to publish an incomplete reconstruction after reaching
+the budget. The existing live SSE EOF handler still uses its legacy full run
+GET and needs a separate compatible migration before declaring M2.2 finished.
