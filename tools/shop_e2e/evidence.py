@@ -14,6 +14,7 @@ BROWSER_TESTS = {
 MCP_TESTS = {
     "test_real_mcp_confirmation_ownership_and_replay",
     "test_cancelled_operation_and_invalid_execution_grant",
+    "test_real_mcp_lost_ack_replay_has_single_pending_case",
 }
 
 
@@ -84,4 +85,28 @@ def verify_readback(data: dict, actual: dict, refunded: bool) -> dict:
     for key, value in expected.items():
         if actual[key] != value or isinstance(actual[key], bool):
             raise ValueError(f"database invariant failed: {key}")
+    return {"verified": True, **expected}
+
+
+def verify_pending_submission(data: dict, actual: dict) -> dict:
+    """Independent MySQL assertion for a successful, not-yet-approved after-sale.
+
+    Java operation must be consumed only once; no simulated refund is allowed
+    before staff review/approval. The database snapshot has the same 18 fields
+    as readback_sql() for the existing refund/cancel acceptance.
+    """
+    expected = {
+        "order_id": data["order_id"], "order_status": 1,
+        "pay_amount": 49.9, "sale_count": 1, "refunded_count": 0,
+        "case_id": data["case_id"], "ledger_count": 0,
+        "ledger_case_id": None, "ledger_amount": 0,
+        "job_count": 0, "done_jobs": 0, "refund_events": 0,
+        "operation_count": 1, "operation_status": "SUCCEEDED",
+        "operation_case": data["case_id"], "consumed": 1,
+    }
+    if not isinstance(actual, dict) or set(actual) != set(expected):
+        raise ValueError("incomplete lost-ack independent database evidence")
+    for key, value in expected.items():
+        if actual[key] != value or isinstance(actual[key], bool):
+            raise ValueError(f"lost-ack invariant failed: {key}")
     return {"verified": True, **expected}

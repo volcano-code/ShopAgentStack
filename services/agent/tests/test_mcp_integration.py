@@ -1,6 +1,8 @@
 """Explicit local integration: real SDK transport -> real Java -> synthetic MySQL orders."""
 import asyncio
 import os
+import json
+from pathlib import Path
 from uuid import uuid4
 import httpx
 import pytest
@@ -86,3 +88,45 @@ async def test_cancelled_operation_and_invalid_execution_grant():
         with pytest.raises(BusinessError): await java(f"/shop_agent_stack/agent/operations/{preview['id']}/confirm",bearer=bearer,body={"confirmationToken":preview["confirmationToken"]})
     async with tools.connect("invalid-synthetic-grant") as session:
         with pytest.raises(ValueError): await tools.call(session,"list_my_orders",{})
+
+
+async def test_real_mcp_lost_ack_replay_has_single_pending_case():
+    """Real MCP+Java+MySQL, caller deliberately drops successful acknowledgement.
+
+    No model call or external payment. A *new* MCP session with the original
+    execution grant must return the same operation/case, not create another.
+    This is caller-boundary ack loss, not a network proxy fault.
+    """
+    bearer=await customer()
+    order_id=await paid_order(bearer)
+    auth=await identity(bearer)
+    async with tools.connect(auth["executionToken"]) as session:
+        preview=(await tools.call(session,"preview_after_sale",{
+            "order_id":order_id,"reason":"Synthetic lost acknowledgment acceptance"}))["preview"]
+        await java(f"/shop_agent_stack/agent/operations/{preview['id']}/confirm",
+                   bearer=bearer,body={"confirmationToken":preview["confirmationToken"]})
+
+        async def response_lost_after_business_commit():
+            # Intentionally discard the successful result from the caller. The
+            # next step only knows the original persisted operation ID.
+            await tools.call(session,"submit_after_sale",{"operation_id":preview["id"]})
+            raise ConnectionError("synthetic caller dropped the acknowledgement")
+
+        with pytest.raises(ConnectionError,match="synthetic caller"):
+            await response_lost_after_business_commit()
+
+    async with tools.connect(auth["executionToken"]) as recovered:
+        result=await tools.call(recovered,"submit_after_sale",{
+            "operation_id":preview["id"]})
+        operation=result["operation"]
+        assert operation["status"]=="SUCCEEDED"
+        assert isinstance(operation["case_id"],int) and operation["case_id"]>0
+        after_sales=(await tools.call(recovered,"list_my_after_sales",{}))["after_sales"]
+        matching=[row for row in after_sales if row["order_id"]==order_id]
+        assert len(matching)==1 and matching[0]["id"]==operation["case_id"]
+
+    # Only synthetic business identifiers: no authorization tokens, user
+    # content or provider response. Runner independently reads real MySQL.
+    Path("/tmp/m23-lost-ack-receipt.json").write_text(json.dumps({
+        "order_id":order_id, "operation_id":preview["id"],
+        "case_id":operation["case_id"]}),encoding="utf-8")

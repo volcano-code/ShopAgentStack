@@ -246,3 +246,17 @@ def test_dirty_source_cannot_be_reported_as_committed_acceptance(monkeypatch, tm
     assert report["status"] == "failed" and report["cleanup_verified"]
     assert report["failure_stage"].startswith("worktree-check:")
     assert "image-build" not in calls and "startup" not in calls and "browser" not in calls
+
+
+def test_pending_lost_ack_is_one_case_no_refund_and_consumed_once():
+    data = {"order_id": 7, "operation_id": OP, "case_id": 3}
+    actual = readback(False)
+    actual.update(sale_count=1, case_id=3, operation_status="SUCCEEDED",
+                  operation_case=3, consumed=1)
+    assert ev.verify_pending_submission(data, actual)["verified"] is True
+    for field in actual:
+        broken = dict(actual)
+        broken[field] = "wrong"
+        with pytest.raises(ValueError):
+            ev.verify_pending_submission(data, broken)
+    assert "SELECT JSON_OBJECT" in ev.readback_sql(data)
