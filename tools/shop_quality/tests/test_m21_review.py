@@ -50,6 +50,27 @@ def test_blank_review_template_cannot_claim_answer_quality():
     assert "远山" not in json.dumps(template)  # rubric only, no test prompt/reply
 
 
+def test_review_template_contains_public_per_turn_rubrics_and_expected_contracts():
+    plan, obs = fixture()
+    sheet = m21_review.review_template(obs, plan)
+    assert "500mL" in sheet[0]["rubric"]
+    assert "先重查" in sheet[1]["rubric"]
+    assert sheet[0]["expected_contract"] == {"products": [10003]}
+    assert sheet[1]["expected_contract"] == {"products": [10003]}
+    assert all("input" not in entry and "PRIVATE" not in str(entry)
+               for entry in sheet)
+
+
+def test_blank_or_missing_review_rubric_fails_closed():
+    import copy
+    plan, obs = fixture()
+    for bad in (None, "", "   ", "x" * 2001):
+        broken = copy.deepcopy(plan)
+        broken["cases"][0]["turns"][0]["rubric"] = bad
+        with pytest.raises(m21_review.ProbeError):
+            m21_review.review_template(obs, broken)
+
+
 def test_unjudged_reviews_cannot_create_fake_accuracy():
     plan,obs=fixture()
     out=m21_review.score(obs,plan,[])

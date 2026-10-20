@@ -77,18 +77,31 @@ def validate_report(report, plan):
 
 
 def review_template(report, plan):
+    """Export public expectations, not user prompts or model responses.
+
+    The versioned shopping corpus stores its rubrics at *turn* level. A blank
+    rubric must not silently create a sheet that cannot be judged. No model
+    answer is included; reviewers inspect it independently in the workspace.
+    """
     rows = validate_report(report, plan)
     cases = {c["id"]: c for c in plan["cases"]}
-    return [
-        {"case_id": row["case_id"], "turn": row["turn"],
-         "run_id": row["run_id"], "answer_sha256": row["answer_sha256"],
-         "method": "human", "reviewer_reference": None,
-         "answer_correct": None, "citation_support": None,
-         "clarification_quality": None,
-         "rubric": cases[row["case_id"]]["turns"][row["turn"]-1].get("rubric", ""),
-         "instruction": "Review actual isolated app answer and current business evidence. Do not ask tested model to grade itself."}
-        for row in rows
-    ]
+    result = []
+    for row in rows:
+        turn = cases[row["case_id"]]["turns"][row["turn"] - 1]
+        rubric = turn.get("rubric")
+        require(isinstance(rubric, str) and 0 < len(rubric.strip()) <= 2000,
+                "missing_or_invalid_review_rubric")
+        contract = turn.get("expect")
+        require(isinstance(contract, dict), "missing_review_expectations")
+        result.append({
+            "case_id": row["case_id"], "turn": row["turn"],
+            "run_id": row["run_id"], "answer_sha256": row["answer_sha256"],
+            "method": "human", "reviewer_reference": None,
+            "answer_correct": None, "citation_support": None,
+            "clarification_quality": None,
+            "rubric": rubric, "expected_contract": contract,
+            "instruction": "Review the actual isolated app answer against this public rubric and current authoritative business evidence. Do not ask the tested model to grade itself."})
+    return result
 
 
 def load_review(path):

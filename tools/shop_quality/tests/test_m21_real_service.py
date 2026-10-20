@@ -44,6 +44,18 @@ def test_real_api_transport_only_accepts_literal_loopback(url):
         m21.loopback_endpoint(url)
 
 
+def test_explicit_live_cli_without_owner_credentials_never_reaches_network(monkeypatch, capsys):
+    def denied(*args, **kwargs):
+        pytest.fail("A live HTTP client must not be constructed without credentials")
+    monkeypatch.setattr(m21, "LoopbackAgent", denied)
+    args = ["--scenario", "dev-reference", "--execute-live",
+            "--provider", "custom", "--consent", m21.CONSENT,
+            "--isolated-ack", "I_VERIFIED_A_DISPOSABLE_STACK",
+            "--max-model-attempts", "16"]
+    assert m21.main(args, env={}) == 2
+    assert not capsys.readouterr().out
+
+
 def test_live_model_needs_both_explicit_consents_and_owned_endpoint():
     args = SimpleNamespace(execute_live=True, provider="custom",
                            consent=m21.CONSENT,

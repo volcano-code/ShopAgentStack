@@ -102,3 +102,23 @@ M2.1 的真实模型准确率和完整业务效用仍未完成。
 若有 FAILED、UNCERTAIN、WAITING_CONFIRMATION 或没有最终回答的轮次，
 即使其余回答均评分，human_rubric_pass_rate 仍为 null，
 只能报告保守下界，不会把失败轮次漏出分母。
+
+## M2.1 预检实跑和评分标准完整性加固
+
+在当前分支对应的 GitHub Actions 已归档源码上，本地执行
+`python -m pytest tools/shop_quality/tests/test_m21_real_service.py
+tools/shop_quality/tests/test_m21_review.py -q`：33 项通过。
+执行 `python -m tools.shop_quality.m21_real_service
+--scenario dev-reference --scenario dev-budget`，预检通过，
+题集 SHA256 为 `97c11ff39066736486ad6c870a60369a8dc42d9134a8f29680e5b983d30cbe5e`，
+4 轮开发题目，合计理论最多 32 次模型请求（不代表真实调用）。
+`network_called=false`、`paid_model_called=false`。
+
+人工复核模板现在严格读取题集每一轮对应的 `rubric`，
+并附带已公开的 `expected_contract`（商品 ID、必要约束等），
+防止复核人拿到空评分依据。任一 rubric 缺失、空白或过大都拒绝生成模板。
+人工评分输出仍不得包含这些模板提示或模型回答原文；
+完整准确率仍要求实际运行、逐轮人工复核以及先前的身份/回答哈希一致性。
+新增测试还验证：在无账户凭据的情况下，即使给出付费同意参数，
+工具仍不会构造 HTTP 客户端或发起网络请求。
+以上本地结果仅是预检与代码验收，不是有效的真实模型质量指标。
