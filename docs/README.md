@@ -13,6 +13,7 @@ ShopAgentStack 的产品能力、运行方式、服务边界和测试方法。
 | [运维指南](operations.md) | 配置、启停、排障与恢复 |
 | [数据与测试](testing.md) | 数据规模、测试入口与指标口径 |
 | [基线核对与环境隔离](baseline-verification.md) | 核心链路验证矩阵、只读快照比较与未验证边界 |
+| [M2.3 执行准入和启动恢复](agent-execution-governance-m23.md) | 单实例并发准入、QUEUED 启动失败与回归限制 |
 | [工程实现与归属](engineering-guide.md) | 上游边界、增量模块和源码导航 |
 | [代码结构与维护](maintainability.md) | 关键不变量、注释约定及维护约束 |
 | [发布规范](public-release.md) | 许可证、素材、凭据和版本交付检查 |

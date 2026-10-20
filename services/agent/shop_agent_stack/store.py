@@ -14,6 +14,13 @@ MAX_EVENTS_PER_PAGE = 100
 # A corrupt legacy run must fail closed rather than issue unlimited cancellations.
 MAX_CANCELLATION_PREVIEWS = 16
 
+# Conservative single-instance active-run admission. WAITING_CONFIRMATION and
+# UNCERTAIN do not consume a running model slot; their safety remains governed
+# by the existing operation state machine and session restrictions.
+MAX_ACTIVE_RUNS_GLOBAL = 8
+MAX_ACTIVE_RUNS_PER_MEMBER = 3
+ACTIVE_RUN_STATES = "('QUEUED','RUNNING','CONFIRMING','STOPPING')"
+
 
 class StoreError(Exception):
     def __init__(self, message, code=409):
@@ -35,6 +42,7 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_events_kind ON events(run_id,kind,id DESC);
                 CREATE INDEX IF NOT EXISTS idx_runs_history ON runs(session_id,created DESC,id DESC);
                 CREATE INDEX IF NOT EXISTS idx_runs_attention ON runs(session_id,created DESC,id DESC) WHERE status NOT IN ('COMPLETED','FAILED','STOPPED');
+                CREATE INDEX IF NOT EXISTS idx_runs_active ON runs(status) WHERE status IN ('QUEUED','RUNNING','CONFIRMING','STOPPING');
                 CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(member_id,created);
                 CREATE TABLE IF NOT EXISTS task_context(session_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             """)
@@ -109,11 +117,41 @@ class Store:
                 return previous["id"], False
             if db.execute("SELECT 1 FROM runs WHERE session_id=? AND status IN ('QUEUED','RUNNING','CONFIRMING','STOPPING')",(sid,)).fetchone():
                 raise StoreError("当前会话仍在执行，请等待或停止后再发送")
+            # BEGIN IMMEDIATE above serializes admission across different
+            # sessions: an idempotent request replay has already been handled.
+            active_member = db.execute(
+                "SELECT COUNT(*) FROM runs r JOIN sessions s ON s.id=r.session_id "
+                f"WHERE s.member_id=? AND r.status IN {ACTIVE_RUN_STATES}",
+                (member,)).fetchone()[0]
+            if active_member >= MAX_ACTIVE_RUNS_PER_MEMBER:
+                raise StoreError("当前账号执行任务较多，请稍后手动重试", 429)
+            active_global = db.execute(
+                f"SELECT COUNT(*) FROM runs WHERE status IN {ACTIVE_RUN_STATES}").fetchone()[0]
+            if active_global >= MAX_ACTIVE_RUNS_GLOBAL:
+                raise StoreError("服务执行任务较多，请稍后手动重试", 429)
             rid = str(uuid4())
             db.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?)",(rid,sid,request_id,message,provider,"QUEUED",time.time()))
             db.execute("UPDATE sessions SET title=? WHERE id=? AND title='新对话'",(message[:28],sid))
             self._event(db,rid,"state",{"status":"QUEUED","message":"已接收请求"})
             return rid, True
+
+    def fail_unstarted(self, rid, member):
+        """Atomically fail an unscheduled QUEUED run, never an active/stopping one.
+
+        A model setting can become unavailable after create_run() has committed.
+        Leaving QUEUED behind would block that session until process restart.
+        """
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._require_run_owner(db, rid, member)
+            changed = db.execute(
+                "UPDATE runs SET status='FAILED' WHERE id=? AND status='QUEUED'",
+                (rid,)).rowcount
+            if changed:
+                self._event(db, rid, "state", {
+                    "status": "FAILED",
+                    "message": "任务未能启动，请检查模型配置后重新发送"})
+            return bool(changed)
 
     def run(self, rid, member):
         with self.db() as db:

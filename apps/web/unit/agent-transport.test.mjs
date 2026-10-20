@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {EventDecoder, applyEvent, createLatch, followAgentRun, requestAgent, runValue} from "../src/agentTransport.ts";
+import {EventDecoder, applyEvent, createLatch, followAgentRun, requestAgent, runValue, AgentHttpError} from "../src/agentTransport.ts";
 const enc = new TextEncoder();
 const event = (id, text="你好") => ({id,kind:"assistant_delta",data:{message_id:"m",text}});
 const frame = (e,nl="\n") => `id: ${e.id}${nl}data: ${JSON.stringify(e)}${nl}${nl}`;
@@ -142,4 +142,13 @@ test("bounded reader failure cannot replace streamed events or falsely end a run
   }));
   assert.equal(readerCalls,3);
   assert.equal(states.at(-1),"paused");
+});
+
+test("explicit 429 admission refusal never retries a model run or echoes request data",async()=>{
+ let calls=0;
+ await assert.rejects(requestAgent("/sessions/s/runs","synthetic",{message:"PRIVATE_USER_INPUT"},undefined,{
+  fetcher:async()=>{calls++;return Response.json({detail:"PRIVATE_BACKEND_BODY"},{status:429});}
+ }),e=>e instanceof AgentHttpError && e.status===429 &&
+  !e.message.includes("PRIVATE_BACKEND_BODY") && !e.message.includes("PRIVATE_USER_INPUT"));
+ assert.equal(calls,1);
 });

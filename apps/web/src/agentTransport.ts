@@ -10,7 +10,9 @@ export class AgentHttpError extends Error {
   readonly status: number;
   constructor(status: number) {
     super(status === 401 ? "登录已失效，请重新登录。" : status === 403 ? "无权访问此会话，请检查当前账号。" :
-      status === 409 ? "操作状态已变化，请先核实结果。" : "请求未完成，请核实当前状态后再操作。");
+      status === 409 ? "操作状态已变化，请先核实结果。" :
+      status === 429 ? "当前执行任务较多，请稍后手动重试；不会自动提交操作。" :
+      "请求未完成，请核实当前状态后再操作。");
     this.status = status;
   }
 }
