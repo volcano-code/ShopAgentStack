@@ -13,6 +13,9 @@ from .preferences import Preferences
 from fastapi.exceptions import RequestValidationError
 
 tasks: dict[str, asyncio.Task] = {}
+
+# The DB admission lease is longer than this outbound request deadline.
+MODEL_PROBE_TIMEOUT_SECONDS = 20
 store: Store
 preferences: Preferences
 
@@ -113,14 +116,27 @@ async def test_provider(provider: str,authorization: str=Header(default="")):
     config=preferences.personal(auth["memberId"],provider)
     if not config:
         raise HTTPException(400,"请先保存个人模型配置")
+    # A model connection test can cost real tokens. Admission is an atomic,
+    # owner-scoped SQLite write, not an in-memory semaphore. Do not create
+    # another probe or retry automatically when a timeout/network error occurs.
+    ticket = await asyncio.to_thread(store.begin_provider_test, auth["memberId"])
     try:
-        message,usage=await providers.complete(provider,[{"role":"user","content":"Reply with OK."}], [{"type":"function","function":{"name":"connection_check","description":"Connection test only","parameters":{"type":"object","properties":{}}}}],config=config)
-        if not message.get("content") and not message.get("tool_calls"):
-            raise ValueError()
+        async with asyncio.timeout(MODEL_PROBE_TIMEOUT_SECONDS):
+            message, usage = await providers.complete(
+                provider, [{"role":"user","content":"Reply with OK."}],
+                [{"type":"function","function":{"name":"connection_check",
+                  "description":"Connection test only",
+                  "parameters":{"type":"object","properties":{}}}}],
+                config=config)
+            if not message.get("content") and not message.get("tool_calls"):
+                raise ValueError()
         return {"ok":True,"message":"基础连接成功；工具调用能力请在对话中进一步验证"}
     except Exception:
-        # Includes transport errors and any provider body; do not echo submitted credentials.
+        # Includes timeouts and provider bodies; don't echo keys, prompts
+        # or transport exception details. CancelledError still propagates.
         raise HTTPException(400,"连接测试失败，请检查地址、模型、密钥及网络；配置仍已保存") from None
+    finally:
+        await asyncio.to_thread(store.finish_provider_test, ticket, auth["memberId"])
 
 
 @app.get("/sessions")

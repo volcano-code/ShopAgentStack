@@ -21,6 +21,14 @@ MAX_ACTIVE_RUNS_GLOBAL = 8
 MAX_ACTIVE_RUNS_PER_MEMBER = 3
 ACTIVE_RUN_STATES = "('QUEUED','RUNNING','CONFIRMING','STOPPING')"
 
+# Connection-test probes can invoke billable third-party models. This separate
+# quota never grants business write permissions or leases to Agent runs.
+MAX_PROVIDER_PROBES_PER_MEMBER_WINDOW = 3
+PROVIDER_PROBE_WINDOW_SECONDS = 300
+MAX_PROVIDER_PROBES_ACTIVE_PER_MEMBER = 1
+MAX_PROVIDER_PROBES_ACTIVE_GLOBAL = 4
+PROVIDER_PROBE_LEASE_SECONDS = 45
+
 
 class StoreError(Exception):
     def __init__(self, message, code=409):
@@ -45,7 +53,22 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_runs_active ON runs(status) WHERE status IN ('QUEUED','RUNNING','CONFIRMING','STOPPING');
                 CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(member_id,created);
                 CREATE TABLE IF NOT EXISTS task_context(session_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS provider_test_attempts (
+                    id TEXT PRIMARY KEY,
+                    member_id INTEGER NOT NULL,
+                    created REAL NOT NULL,
+                    lease_until REAL NOT NULL,
+                    active INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_probe_member_window
+                    ON provider_test_attempts(member_id,created);
+                CREATE INDEX IF NOT EXISTS idx_probe_active
+                    ON provider_test_attempts(active,lease_until);
             """)
+            # Single-process lifetime: previously admitted outbound probes
+            # cannot survive the process restart. Keep their counted attempts
+            # within the rolling window, but release stale active leases.
+            db.execute("UPDATE provider_test_attempts SET active=0 WHERE active=1")
             for row in db.execute("SELECT id,status FROM runs WHERE status IN ('QUEUED','RUNNING','CONFIRMING','STOPPING')").fetchall():
                 status = "UNCERTAIN" if row["status"] == "CONFIRMING" else "INTERRUPTED"
                 db.execute("UPDATE runs SET status=? WHERE id=?", (status, row["id"]))
@@ -67,6 +90,50 @@ class Store:
         if len(serialized.encode("utf-8")) > MAX_EVENT_BYTES or len(kind.encode("utf-8")) > 128:
             raise StoreError("事件内容超过单条大小限制", 400)
         db.execute("INSERT INTO events(run_id,kind,payload) VALUES(?,?,?)", (run_id, kind, serialized))
+
+
+    def begin_provider_test(self, member):
+        """Atomically admit one explicitly requested provider connection test.
+
+        At most one active test per account, four globally, and three admitted
+        attempts per account within five minutes. Rejections never count as
+        admitted attempts. No API key, URL or prompt is stored.
+        """
+        now = time.time()
+        ticket = str(uuid4())
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE provider_test_attempts SET active=0 "
+                       "WHERE active=1 AND lease_until<=?", (now,))
+            db.execute("DELETE FROM provider_test_attempts "
+                       "WHERE active=0 AND created<?", (now - PROVIDER_PROBE_WINDOW_SECONDS,))
+            active_member = db.execute(
+                "SELECT COUNT(*) FROM provider_test_attempts "
+                "WHERE member_id=? AND active=1", (member,)).fetchone()[0]
+            if active_member >= MAX_PROVIDER_PROBES_ACTIVE_PER_MEMBER:
+                raise StoreError("模型连接测试仍在进行，请等待结果后再试", 429)
+            active_global = db.execute(
+                "SELECT COUNT(*) FROM provider_test_attempts WHERE active=1").fetchone()[0]
+            if active_global >= MAX_PROVIDER_PROBES_ACTIVE_GLOBAL:
+                raise StoreError("模型连接测试繁忙，请稍后手动重试", 429)
+            recent = db.execute(
+                "SELECT COUNT(*) FROM provider_test_attempts "
+                "WHERE member_id=? AND created>=?",
+                (member, now - PROVIDER_PROBE_WINDOW_SECONDS)).fetchone()[0]
+            if recent >= MAX_PROVIDER_PROBES_PER_MEMBER_WINDOW:
+                raise StoreError("模型连接测试次数已达当前窗口上限，请稍后再试", 429)
+            db.execute(
+                "INSERT INTO provider_test_attempts VALUES(?,?,?,?,1)",
+                (ticket, member, now, now + PROVIDER_PROBE_LEASE_SECONDS))
+        return ticket
+
+    def finish_provider_test(self, ticket, member):
+        """Owner-bound idempotent release, safe on errors and cancellation."""
+        with self.db() as db:
+            return db.execute(
+                "UPDATE provider_test_attempts SET active=0 "
+                "WHERE id=? AND member_id=? AND active=1",
+                (ticket, member)).rowcount == 1
 
     def sessions(self, member):
         with self.db() as db:
