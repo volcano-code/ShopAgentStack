@@ -50,7 +50,7 @@ async def invalid_input(request, exc):
 @app.exception_handler(BusinessError)
 @app.exception_handler(StoreError)
 async def controlled_error(request,exc):
-    code=exc.code if exc.code in (400,401,403,404,409,503) else 400
+    code=exc.code if exc.code in (400,401,403,404,409,429,503) else 400
     return JSONResponse({"detail":str(exc)},status_code=code)
 
 
@@ -174,9 +174,19 @@ async def create_run(sid: str,body: Message,authorization: str=Header(default=""
         raise HTTPException(503,"所选模型尚未配置")
     rid,created=store.create_run(sid,auth["memberId"],str(body.request_id),body.message.strip(),body.provider)
     if created:
-        config = None if body.provider == "fixture" else preferences.resolve(auth["memberId"],body.provider)
-        tasks[rid]=asyncio.create_task(observability.execute_run(runtime.execute,store,store.run(rid,auth["memberId"]),auth["memberId"],auth["executionToken"],model_config=config))
-        tasks[rid].add_done_callback(lambda task:tasks.pop(rid,None))
+        # Persisted QUEUED is a claim of responsibility. If resolution or task
+        # creation fails, transition it to FAILED before returning to the caller.
+        # Never leak model credentials or silently schedule a replacement run.
+        try:
+            config = None if body.provider == "fixture" else preferences.resolve(auth["memberId"],body.provider)
+            run = store.run(rid,auth["memberId"])
+            task = asyncio.create_task(observability.execute_run(
+                runtime.execute,store,run,auth["memberId"],auth["executionToken"],model_config=config))
+        except Exception:
+            store.fail_unstarted(rid,auth["memberId"])
+            raise HTTPException(503,"任务未能启动，请检查模型配置后重新发送") from None
+        tasks[rid]=task
+        task.add_done_callback(lambda task:tasks.pop(rid,None))
     return store.run(rid,auth["memberId"])
 
 
