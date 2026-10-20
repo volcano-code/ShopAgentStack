@@ -55,11 +55,15 @@ async def execute(store, run, member, execution, model_config=None, *, memory_en
                 run["provider"], messages, definitions, on_delta=on_delta,
                 max_output_tokens=ticket.output_limit,
                 **({"config": model_config} if model_config else {}))
-        except BaseException:
+        except BaseException as exc:
             receipt = usage_budget.settle(ticket, None)
             store.emit(rid, "usage", {
                 "provider": run["provider"], "stage": stage,
                 **receipt, "outcome": "unknown"})
+            # A vendor/client ValueError can contain a raw upstream body or key.
+            # Keep the cause off persisted events and public responses.
+            if isinstance(exc, ValueError):
+                raise ValueError("模型调用未完成，请检查模型配置或稍后重试") from None
             raise
         receipt = usage_budget.settle(ticket, usage)
         finish = usage.get("finish_reason") if isinstance(usage, dict) else None
