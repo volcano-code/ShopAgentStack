@@ -22,6 +22,9 @@ async function setup(page: Page, mode: string) {
     events: paged ? syntheticHistory : mode === "confirm" ? [preview] :
       [{ id: 1, kind: "assistant_delta", data: { message_id: "m", text: "已接收你的请求。" } }] };
   const counts = { events: 0, confirm: 0, stop: 0, sends: 0, snapshots: 0, pages: 0 };
+  // Control the first page deterministically rather than racing a fixed sleep.
+  let releaseFirstPage!: () => void;
+  const firstPageGate = new Promise<void>(resolve => { releaseFirstPage = resolve; });
   await page.addInitScript((mode) => {
     // Init scripts also run on login navigation. Seed only once per test tab.
     if (sessionStorage.getItem("__workspace_test_seeded")) return;
@@ -49,7 +52,7 @@ async function setup(page: Page, mode: string) {
     if (path === "/api/agent/runs/r/events/page") {
       counts.pages++;
       const after = Number(new URL(route.request().url()).searchParams.get("after") || "0");
-      if (paged && counts.pages === 1) await new Promise(resolve => setTimeout(resolve, 140));
+      if (mode === "paged" && counts.pages === 1) await firstPageGate;
       if (mode === "paged-fail" && counts.pages === 2)
         return route.fulfill({ status: 503, json: { detail: "synthetic transient read" } });
       const remaining = stored.events.filter(e => e.id > after);
@@ -80,7 +83,7 @@ async function setup(page: Page, mode: string) {
     return route.fulfill({ status: 404, json: { detail: "test endpoint absent" } });
   });
   await page.goto("/app/assistant");
-  return { stored, counts };
+  return { stored, counts, releaseFirstPage };
 }
 test("early EOF is not completion; bounded reconnect and manual GET recovery", async ({ page }) => {
   const { stored, counts } = await setup(page, "disconnect");
@@ -158,10 +161,15 @@ for (const width of [360, 390, 768]) test(`toolbar controls do not overlap at ${
 });
 
 test("paged historical confirmation is gated until all event pages are loaded", async ({ page }) => {
-  const { counts } = await setup(page, "paged");
+  const { counts, releaseFirstPage } = await setup(page, "paged");
   await expect.poll(() => counts.pages).toBeGreaterThan(0);
-  await expect(page.getByRole("button", { name: "确认提交售后", exact: true })).not.toBeVisible();
-  await expect(page.getByRole("button", { name: "确认提交售后", exact: true })).toBeEnabled();
+  const confirm = page.getByRole("button", { name: "确认提交售后", exact: true });
+  // The first page is blocked until released below: not-visible is now
+  // a meaningful safety assertion, not a timing-dependent observation.
+  await expect(confirm).not.toBeVisible();
+  expect(counts.confirm).toBe(0);
+  releaseFirstPage();
+  await expect(confirm).toBeEnabled();
   await expect(page.locator(".agent-text")).toContainText("历史记录需要按页恢复。");
   expect(counts.pages).toBe(3);
   expect(counts.confirm).toBe(0);

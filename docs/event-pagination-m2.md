@@ -10,7 +10,7 @@ This is the first M2.2 backend increment, not the completed event-pagination mil
 
 ## Limits, next work
 
-This adds a 128 KiB single-event write cap and 192 KiB byte budget per paged response. Old oversized rows are retained, represented by an explicit display-only error event on this API; the original data is not silently destroyed. Legacy `Store.run`, `Store.session` and `history_pages.py` still materialize full events for backward compatibility. The frontend has not switched to paged retrieval. A subsequent change must introduce event byte limits, preserve preview/confirmation independently of UI pages, and migrate the workspace with browser regression tests. This change does not alter Java authority, confirmations or payment/refund behavior.
+This adds a 128 KiB single-event write cap and 192 KiB byte budget per paged response. Old oversized rows are retained, represented by an explicit display-only error event on this API; the original data is not silently destroyed. Legacy `Store.run`, `Store.session` and `history_pages.py` still materialize full events for backward compatibility. The frontend now uses summary history and bounded event pages for selected/history runs, while legacy endpoints remain available. Additional work must remove remaining full-event reads during reconnection and explicit business actions, independently preserve preview/confirmation state, and verify old large histories. This change does not alter Java authority, confirmations or payment/refund behavior.
 
 No paid model calls. Validate with locked Agent tests and Workspace experience CI; real browser/Compose CI belongs to the exact new commit, not the parent.
 
@@ -36,3 +36,7 @@ pages have arrived; failed second-page fetches retain existing data and require
 manual read-only retry; no GET implicitly submits a business operation. Tests
 also check a lost explicit confirmation response is reconciled by GET without a
 second POST. This test fixture is not an independent real-provider evaluation.
+
+### Deterministic browser gating regression
+
+The first page of the 207-event fixture is held by an explicit test-controlled promise. Before releasing it, the confirmation button must be absent and no POST may occur. Once released, all three pages must be read before an intentional confirmation can be sent. This avoids treating arbitrary time delays as security evidence. The separate second-page-failure test checks the user-controlled retry behavior.
