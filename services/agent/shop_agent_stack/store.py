@@ -335,6 +335,46 @@ class Store:
                 "json_extract(payload,'$.id')=? ELSE 0 END LIMIT 1",
                 (rid, operation_id)).fetchone() is not None
 
+    def usage_summary(self, rid, member):
+        """Owner-scoped provider reports, not inferred vendor invoice totals.
+
+        Legacy usage logs may be arbitrarily long: do not emit a fake total
+        after reaching this strictly bounded read limit.
+        """
+        with self.db() as db:
+            db.execute("BEGIN")
+            self._require_run_owner(db, rid, member)
+            rows = db.execute(
+                "SELECT payload FROM events WHERE run_id=? AND kind='usage' "
+                "ORDER BY id LIMIT 101", (rid,)).fetchall()
+        if len(rows) > 100:
+            return {"call_attempts": None, "usage_reported_calls": None,
+                    "usage_unknown_calls": None, "reported_token_sum": None,
+                    "total_tokens": None, "estimated_cost": None,
+                    "complete": False, "basis": "provider_reported_only"}
+        known, unknown, known_sum = 0, 0, 0
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+                if not isinstance(payload, dict):
+                    raise ValueError()
+                value = payload.get("reported_tokens")
+                flag = payload.get("usage_known")
+                is_known = ((flag is True and type(value) is int and value >= 0) or
+                            (flag is None and type(value) is int and value > 0))
+                if is_known:
+                    known += 1
+                    known_sum += value
+                else:
+                    unknown += 1
+            except (TypeError, ValueError):
+                unknown += 1
+        return {"call_attempts": len(rows), "usage_reported_calls": known,
+                "usage_unknown_calls": unknown, "reported_token_sum": known_sum,
+                "total_tokens": known_sum if not unknown and known else None,
+                "estimated_cost": None, "complete": not unknown,
+                "basis": "provider_reported_only"}
+
     def run_status(self, rid, member):
         """Owner-scoped status lookup; never materializes the event stream."""
         with self.db() as db:

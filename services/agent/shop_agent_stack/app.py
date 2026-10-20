@@ -251,6 +251,13 @@ async def get_run(rid: str,summary_only: bool=Query(default=False),
             else store.run(rid,auth["memberId"]))
 
 
+@app.get("/runs/{rid}/usage")
+async def run_usage(rid: str, authorization: str=Header(default="")):
+    auth = await identity(authorization)
+    result = await asyncio.to_thread(store.usage_summary, rid, auth["memberId"])
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/runs/{rid}/events/page")
 async def event_page(rid: str, after: int=Query(default=0,ge=0),
                      limit: int=Query(default=100,ge=1,le=100),
