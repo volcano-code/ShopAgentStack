@@ -63,3 +63,36 @@ dev 场景、不超过六轮，每轮后端最多准入八次模型请求。整�
 本轮 CI 使用注入的合成 HTTP 响应，验证默认零网络、独立授权、
 分页读取、无重复 POST、未知用量、不保存原始答案及敏感信息、
 待确认的保护。CI 通过 **不代表真实模型测试已经运行**。
+
+## 第二增量：独立人工复核结果
+
+执行真实 Agent 服务采样后，首先生成不含实际回答的人工复核模板：
+
+    python -m tools.shop_quality.m21_review \
+      --observations .local/m21-observations.json \
+      --scenario dev-reference \
+      --template .local/m21-review-template.jsonl
+
+复核人员在隔离的客户工作区查看实际最终回答，并对照题集中的 dev
+rubric 填写每个 run ID 的独立评分。填写 completed JSONL 时，每行
+只保留字段：case_id、turn、run_id、answer_sha256、method=human、
+reviewer_reference、answer_correct、citation_support、
+clarification_quality，不应保存实际回答或敏感用户数据。
+必须去除模板的 rubric / instruction 字段；模板本身不能冒充评分。
+
+    python -m tools.shop_quality.m21_review \
+      --observations .local/m21-observations.json \
+      --scenario dev-reference \
+      --review .local/m21-human-review.jsonl \
+      --out .local/m21-reviewed-score.json
+
+该工具将评分与运行 ID、完整数据集 SHA256 和回答哈希一一对应。
+重复、缺失、错位、模型自评、非布尔值、匿名非人类评分均不获
+得“审核通过”标记。评分不足时整体准确率为 null，
+只输出按全部要求轮数计算的保守下界。即使所有人工评分通过，
+业务写入安全性也不因此得到证明：还需要可信的 Java/MySQL
+独立审计。人工审核来源仅为输入声明，
+工具无法对评分者的真实身份做加密认证。
+
+CI 只在合成观测与合成人工标签上验证这些规则；
+M2.1 的真实模型准确率和完整业务效用仍未完成。
