@@ -96,7 +96,8 @@ async def test_http_launch_failure_leaves_no_queued_run_or_secret(tmp_path, monk
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=module.app),
                                  base_url="http://test") as client:
         first = await client.post(f"/sessions/{sid}/runs", headers={"Authorization": "synthetic"}, json=req)
-        assert first.status_code == 503
+        assert first.status_code == 200
+        assert first.json()["status"] == "FAILED"
         assert "PRIVATE_PROVIDER_CREDENTIAL_SENTINEL" not in first.text
         with store.db() as db:
             row = db.execute("SELECT id,status FROM runs WHERE session_id=?", (sid,)).fetchone()
@@ -105,4 +106,10 @@ async def test_http_launch_failure_leaves_no_queued_run_or_secret(tmp_path, monk
         same = await client.post(f"/sessions/{sid}/runs", headers={"Authorization": "synthetic"}, json=req)
         assert same.status_code == 200
         assert same.json()["id"] == row["id"] and same.json()["status"] == "FAILED"
+        # A genuinely new user attempt gets a different id and can be
+        # admitted again; here the synthetic provider still refuses resolve.
+        fresh = await client.post(f"/sessions/{sid}/runs", headers={"Authorization": "synthetic"},
+                                  json={**req, "request_id": str(uuid4())})
+        assert fresh.status_code == 200 and fresh.json()["status"] == "FAILED"
+        assert fresh.json()["id"] != row["id"]
     assert row["id"] not in module.tasks

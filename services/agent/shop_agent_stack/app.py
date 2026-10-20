@@ -184,7 +184,12 @@ async def create_run(sid: str,body: Message,authorization: str=Header(default=""
                 runtime.execute,store,run,auth["memberId"],auth["executionToken"],model_config=config))
         except Exception:
             store.fail_unstarted(rid,auth["memberId"])
-            raise HTTPException(503,"任务未能启动，请检查模型配置后重新发送") from None
+            # This request has a known, durable run ID and was NOT launched.
+            # Return that FAILED (or concurrently STOPPING) run as a normal
+            # idempotent response. Returning a transport 503 would leave the
+            # browser reusing its old request ID and require another roundtrip
+            # before the user can safely submit a fresh request.
+            return store.run(rid,auth["memberId"])
         tasks[rid]=task
         task.add_done_callback(lambda task:tasks.pop(rid,None))
     return store.run(rid,auth["memberId"])
