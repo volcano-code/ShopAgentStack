@@ -101,3 +101,16 @@ after already refusing the cancellation. A read-only event page represents
 invalid JSON/object payload as an explicit display-only error marker, with a
 stable advancing cursor. The original SQLite bytes remain unchanged; this
 marker is never an authorization to confirm or cancel a business operation.
+
+## M2.2 model-context read-path optimization
+
+`Store.history` now selects only `kind='assistant'` final events from the last
+ten eligible runs and preserves the previous message order and 3,000-character
+slices. The former path decoded **every** tool trace, delta, preview and status
+in those runs although none was passed into the model. It now uses one SQLite
+read transaction and the same owner check, relying on the new
+`(run_id, kind, id DESC)` index. Synthetic regression compares the exact
+old/new model messages and confirms corrupt legacy *non-assistant* rows and
+confirmation secrets never enter the model history. This is an algorithmic
+reduction in unnecessary reads, **not** a measured latency improvement or
+an end-to-end model quality result.

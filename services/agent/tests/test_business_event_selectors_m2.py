@@ -214,3 +214,45 @@ async def test_invalid_or_oversized_legacy_previews_fail_before_cancel(tmp_path,
         records = store.events_page(rid, 7, after=0, limit=100)["events"]
         if scenario == "corrupt":
             assert any(e["kind"] == "error" and e["data"].get("corrupt") for e in records)
+
+
+def test_multiturn_history_selects_only_final_assistant_events_with_identical_context(tmp_path, monkeypatch):
+    store = Store(str(tmp_path / "history-targeted.sqlite"))
+    sid = store.new_session(7)["id"]
+    rid_list = []
+    secret = "NEVER_COPY_PREVIEW_SECRET"
+    for i in range(12):
+        rid, _ = store.create_run(sid, 7, f"req-{i}", f"合成问题 {i}", "fixture")
+        rid_list.append(rid)
+        with store.db() as db:
+            for step in range(80):
+                store._event(db, rid, "tool", {"sequence": step})
+            store._event(db, rid, "assistant", {"text": f"回答 {i} " + "中文" * 1550})
+            store._event(db, rid, "preview",
+                         {"id": f"preview-{i}", "confirmationToken": secret})
+            store._event(db, rid, "assistant", {"text": f"补充 {i}"})
+        store.state(rid, "COMPLETED")
+    baseline = store.history(sid, 7, "not-a-current-run")
+    # A corrupt old tool event is irrelevant to the context. It must not be
+    # decoded merely because its run was among the ten latest turns.
+    with store.db() as db:
+        db.execute("INSERT INTO events(run_id,kind,payload) VALUES(?,?,?)",
+                   (rid_list[-1], "tool", "not-json"))
+        plan = str([tuple(row) for row in db.execute(
+            "EXPLAIN QUERY PLAN SELECT payload FROM events WHERE run_id=? AND kind='assistant' ORDER BY id",
+            (rid_list[-1],))])
+    assert "idx_events_kind" in plan
+
+    def no_legacy_event_scan(*args, **kwargs):
+        pytest.fail("History must query only assistant final events")
+    monkeypatch.setattr(store, "events", no_legacy_event_scan)
+    selected = store.history(sid, 7, "not-a-current-run")
+    assert selected == baseline
+    assert secret not in str(selected)
+    assert len(selected) == 30  # Last ten runs, one user + two assistant messages.
+    assert selected[0]["content"] == "合成问题 2"
+    assert selected[-1] == {"role": "assistant", "content": "补充 11"}
+    assert all(len(row["content"]) <= 3000 for row in selected if row["role"] == "assistant")
+    with pytest.raises(StoreError) as error:
+        store.history(sid, 8, "not-a-current-run")
+    assert error.value.code == 404

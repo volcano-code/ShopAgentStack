@@ -301,16 +301,24 @@ class Store:
                 raise StoreError("执行状态已变化，请刷新核实")
 
     def history(self,sid,member,current_rid):
+        """Preserve model context exactly, reading only assistant final events.
+
+        The previous implementation decoded every preview, tool trace and
+        intermediate delta in the last ten runs, even though none can become a
+        model message. Keep the same run ordering and 3,000-character slice.
+        """
         messages=[]
         with self.db() as db:
+            db.execute("BEGIN")
             if not db.execute("SELECT 1 FROM sessions WHERE id=? AND member_id=?",(sid,member)).fetchone():
                 raise StoreError("会话不存在或无权访问",404)
             runs = db.execute("SELECT * FROM runs WHERE session_id=? AND id!=? AND status IN ('COMPLETED','WAITING_CONFIRMATION') ORDER BY created DESC,rowid DESC LIMIT 10",(sid,current_rid)).fetchall()
-        for run in reversed(runs):
-            messages.append({"role":"user","content":run["input"]})
-            for event in self.events(run["id"]):
-                if event["kind"] == "assistant":
-                    messages.append({"role":"assistant","content":event["data"]["text"][:3000]})
+            for run in reversed(runs):
+                messages.append({"role":"user","content":run["input"]})
+                for event in db.execute(
+                    "SELECT payload FROM events WHERE run_id=? AND kind='assistant' ORDER BY id",
+                    (run["id"],)):
+                    messages.append({"role":"assistant","content":json.loads(event["payload"])["text"][:3000]})
         return messages
 
     def task_context(self, sid, member):
