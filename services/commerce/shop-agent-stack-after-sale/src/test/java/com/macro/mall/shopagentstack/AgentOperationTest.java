@@ -33,4 +33,39 @@ class AgentOperationTest {
         assertThrows(ApiException.class,()->service.identify("expired-synthetic-token"));
         verifyNoInteractions(sales);
     }
+
+    @Test void publicPolicyCheckpointUsesDatabaseEpochClockAndEarliestBoundary() {
+        java.util.Map<String,Object> row=new java.util.HashMap<>();
+        row.put("epoch", 97L);
+        row.put("now_us", 1000000L);
+        row.put("next_start_us", 2000000L);
+        row.put("next_end_us", 1500000L);
+        when(db.queryForMap(argThat(sql->
+            sql.contains("shop_agent_stack_knowledge_epoch") &&
+            sql.contains("m.visibility='CUSTOMER'") &&
+            sql.contains("m.index_status='READY'") &&
+            sql.contains("UNIX_TIMESTAMP(NOW(6))")))).thenReturn(row);
+        PolicyService.CatalogCheckpoint result=new PolicyService(db).checkpoint();
+        assertEquals(97L,result.epoch());
+        assertEquals(1000000L,result.serverTimeUs());
+        assertEquals(1500000L,result.nextTransitionUs());
+        verify(db,times(1)).queryForMap(anyString());
+    }
+
+    @Test void publicPolicyCheckpointSupportsNoScheduledTransition() {
+        java.util.Map<String,Object> row=new java.util.HashMap<>();
+        row.put("epoch", 0L);
+        row.put("now_us", 2000000L);
+        row.put("next_start_us", null);
+        row.put("next_end_us", null);
+        when(db.queryForMap(anyString())).thenReturn(row);
+        var result=new PolicyService(db).checkpoint();
+        assertNull(result.nextTransitionUs());
+    }
+
+    @Test void stalePolicyBoundaryNeverGrantsCachedRead() {
+        when(db.queryForMap(anyString())).thenReturn(Map.of(
+            "epoch",17L,"now_us",2000000L,"next_start_us",1900000L));
+        assertThrows(IllegalStateException.class,()->new PolicyService(db).checkpoint());
+    }
 }
