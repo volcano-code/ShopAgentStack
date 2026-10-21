@@ -3,8 +3,8 @@ from copy import deepcopy
 from pathlib import Path
 import pytest
 import yaml
-from tools.shop_demo.review_probe import validate
-from tools.shop_demo.review_smoke import verify
+from tools.shop_demo.review_probe import validate, ProbeViolation, safe_failure, STAGE
+from tools.shop_demo.review_smoke import verify, read_safe_probe_failure
 from tools.shop_demo.runtime import DemoError
 ROOT=Path(__file__).resolve().parents[3]
 
@@ -79,3 +79,40 @@ def test_probe_does_not_import_models_or_mutation_tools():
     names=[x.args[1].value for x in ast.walk(tree) if isinstance(x,ast.Call) and
            isinstance(x.func,ast.Attribute) and x.func.attr=="call" and len(x.args)>1 and isinstance(x.args[1],ast.Constant)]
     assert set(names)=={"search_policies","get_policy_source"}
+
+
+@pytest.mark.parametrize("field,bad,code", [
+    ("method","BM25","search-method"),
+    ("epoch",96,"search-epoch"),
+    ("clauses",0,"search-clauses"),
+    ("degraded",True,"search-degraded"),
+    ("index_generation","other","search-generation"),
+])
+def test_hybrid_failure_is_precisely_staged_and_strict(field,bad,code):
+    item=search();item["retrieval"][field]=bad
+    STAGE.set("hybrid-search")
+    with pytest.raises(ProbeViolation) as exc:
+        validate(item,"hybrid",97,"test-generation")
+    assert safe_failure(exc.value)=={
+        "failure_type":"ProbeViolation","failure_stage":"hybrid-search",
+        "failure_code":code}
+
+
+def test_read_safe_diagnostic_never_leaks_raw_private_log(tmp_path):
+    logs=tmp_path/"logs";logs.mkdir()
+    p=logs/"20261020-review-customer-search.log"
+    p.write_text("LOCAL_PRIVATE_DIAGNOSTIC\\n"+
+        '{"failure_stage":"source-revalidation","failure_type":"ProbeViolation","failure_code":"source-hash"}\\n')
+    assert read_safe_probe_failure(tmp_path)=={
+        "failure_stage":"source-revalidation","failure_type":"ProbeViolation","failure_code":"source-hash"}
+    p.write_text('{"failure_stage":"source-revalidation","failure_type":"Other",'
+                 '"failure_code":"PRIVATE_FIELD"}\\n')
+    assert read_safe_probe_failure(tmp_path)["failure_type"]=="Unclassified"
+
+
+def test_transport_error_never_contains_vendor_payload():
+    STAGE.set("mcp-connect")
+    safe=safe_failure(ValueError("sensitive upstream response"))
+    assert safe=={"failure_type":"TransportOrServiceError",
+                 "failure_stage":"mcp-connect","failure_code":"execution_failure"}
+    assert "sensitive upstream response" not in str(safe)
