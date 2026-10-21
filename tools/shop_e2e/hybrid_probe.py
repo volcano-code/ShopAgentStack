@@ -166,7 +166,7 @@ async def execute(stage: str) -> dict:
         load_evidence = None
         if stage == "recovered":
             # Actual MCP -> Java catalog/checkpoint -> BGE/Milvus -> revalidation
-            # workload, never a synthetic/mock ranking or LLM. All runs use
+            # workload using only the actual ranking worker and no LLM. All runs use
             # the already-owned synthetic customer and current policy version.
             async def timed_search():
                 begin = time.perf_counter()
