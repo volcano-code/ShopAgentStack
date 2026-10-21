@@ -68,4 +68,13 @@ class AgentOperationTest {
             "epoch",17L,"now_us",2000000L,"next_start_us",1900000L));
         assertThrows(IllegalStateException.class,()->new PolicyService(db).checkpoint());
     }
+
+    @Test void checkpointSerializationRetainsNullBoundaryUnderPortalGlobalObjectMapper() throws Exception {
+        var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
+        mapper.setSerializationInclusion(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL);
+        String json=mapper.writeValueAsString(new PolicyService.CatalogCheckpoint(97L,1234567L,null));
+        assertTrue(json.contains("\"nextTransitionUs\":null"),
+            "The Agent requires an explicit NULL boundary rather than an omitted field");
+        assertTrue(json.contains("\"serverTimeUs\":1234567"));
+    }
 }
