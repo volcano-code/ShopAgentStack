@@ -6,14 +6,24 @@ Only checked method/version/count data leaves the container, never tokens or tex
 from __future__ import annotations
 import asyncio
 import hashlib
-from contextvars import ContextVar
 import json
 from pathlib import Path
 import sys
 from uuid import uuid4
 
 
-STAGE = ContextVar("review_probe_stage", default="bootstrap")
+class _ProbeStage:
+    """One probe per child Python process; survives asyncio.run() teardown."""
+    def __init__(self):
+        self.value = "bootstrap"
+
+    def set(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+STAGE = _ProbeStage()
 PROBE_STAGES = frozenset({"bootstrap","customer-registration","customer-login",
     "customer-policy-list","customer-identity","mcp-connect","hybrid-search",
     "source-revalidation","complete"})
