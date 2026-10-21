@@ -3,6 +3,10 @@ from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from .business import java, BusinessError
+from .policy_cache import PublishedPolicyIndexCache
+
+# Only freshly Java-authorized published policy terms; never final answers.
+_POLICY_CACHE = PublishedPolicyIndexCache()
 
 mcp = FastMCP("ShopAgentStack", stateless_http=True, json_response=True,
               transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True,
@@ -68,7 +72,6 @@ async def search_policies(query: str, ctx: Context) -> dict:
     import time
     from datetime import date
     from langchain_core.documents import Document
-    from .knowledge import LexicalIndex
     if not query.strip() or len(query)>500:
         raise ToolError("政策问题须为 1–500 字")
     started=time.monotonic()
@@ -97,7 +100,11 @@ async def search_policies(query: str, ctx: Context) -> dict:
     import httpx
     from .policy_snapshot import snapshot_digest
     metadata={"method":"BM25","degraded":False}
-    hits=LexicalIndex(documents,at=date.today()).search(query)
+    # Java is still the authority on EVERY invocation. Reuse only the
+    # expensive public BM25 term statistics for an identical versioned
+    # *freshly fetched* catalog. Never cache a customer's query/result.
+    index, _cache_status = _POLICY_CACHE.get(documents, epoch=epoch, at=date.today())
+    hits=index.search(query)
     if os.getenv("SHOP_AGENT_STACK_RETRIEVAL_MODE", "bm25") == "hybrid":
         try:
             digest=snapshot_digest([d.metadata for d in documents])

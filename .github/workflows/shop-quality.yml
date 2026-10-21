@@ -191,6 +191,19 @@ jobs:
             --junit artifacts/agent/tests.xml \
             --out artifacts/agent/m23-admission-evidence.json \
             --requests 40 --workers 12 --trials 5
+      - name: Measure M2.4 versioned BM25 index reuse in network-isolated Agent image
+        env:
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # This never connects to Java, a model, an index worker or the network.
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,size=64m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            shop-agent-quality:ci python -m shop_agent_stack.policy_cache_bench \
+            --iterations 40 > artifacts/agent/m24-policy-cache-raw.json
+          python -m tools.shop_quality.m24_cache_gate \
+            --evidence artifacts/agent/m24-policy-cache-raw.json \
+            --out artifacts/agent/m24-policy-cache-validated.json \
+            --iterations 40
       - name: Remove only this job's container
         if: always()
         run: |
