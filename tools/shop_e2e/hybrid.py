@@ -64,6 +64,36 @@ def verify(receipts: list[dict], vector: dict, database: dict, config: dict, con
             expected_id = policy_ids["first" if stage == "initial" else "revised"]
             if expected_id not in hit_ids:
                 raise ValueError("current policy missing")
+        if stage == "recovered":
+            load = item.get("real_search_load")
+            required = {
+                "scope","sequential_samples","concurrent_samples","parallel_clients",
+                "sequential_hybrid","concurrent_hybrid","concurrent_degraded",
+                "sequential_p50_ms","sequential_p95_ms",
+                "concurrent_p50_ms","concurrent_p95_ms",
+                "production_qps_verified","paid_llm_called",
+            }
+            if not isinstance(load, dict) or set(load) != required:
+                raise ValueError("missing or oversized real Hybrid load evidence")
+            if (load["scope"] != "real_mcp_java_bge_milvus_policy_search"
+                or any(type(load[k]) is not int for k in
+                    ("sequential_samples","concurrent_samples","parallel_clients",
+                     "sequential_hybrid","concurrent_hybrid","concurrent_degraded"))
+                or load["sequential_samples"] != 4
+                or load["concurrent_samples"] != 2 or load["parallel_clients"] != 2
+                or load["sequential_hybrid"] != 4
+                or load["concurrent_hybrid"] + load["concurrent_degraded"] != 2
+                or load["production_qps_verified"] is not False
+                or load["paid_llm_called"] is not False):
+                raise ValueError("incomplete real Hybrid workload")
+            for field in ("sequential_p50_ms", "sequential_p95_ms",
+                          "concurrent_p50_ms", "concurrent_p95_ms"):
+                value = load[field]
+                if type(value) not in (int,float) or not 0 <= value < 60000:
+                    raise ValueError("invalid real Hybrid workload latency")
+            if (load["sequential_p50_ms"] > load["sequential_p95_ms"]
+                or load["concurrent_p50_ms"] > load["concurrent_p95_ms"]):
+                raise ValueError("untrustworthy Hybrid percentile ordering")
         if stage in ONLINE:
             generation = item["generation"]
             w = item["worker"]
