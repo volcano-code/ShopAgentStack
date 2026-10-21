@@ -133,14 +133,19 @@ def test_cache_rejects_boolean_epochs_and_out_of_budget_settings():
 async def test_mcp_still_fetches_java_catalog_and_checks_epoch_each_query(monkeypatch):
     cache = PublishedPolicyIndexCache()
     monkeypatch.setattr(mcp_server, "_POLICY_CACHE", cache)
+    from shop_agent_stack.policy_catalog_cache import PublishedCatalogSnapshot
+    monkeypatch.setattr(mcp_server, "_PUBLIC_CATALOG", PublishedCatalogSnapshot())
     monkeypatch.setenv("SHOP_AGENT_STACK_RETRIEVAL_MODE", "bm25")
     data = {"epoch": 3, "rows": [{
         "policy_id": 1, "version": 1, "clause_no": 1, "title": "退款政策",
         "content": "退款按实付金额核算", "content_hash": "hash1",
-        "family_id": 1}]}
+        "family_id": 1, "clause_cursor": 1}]}
     calls = []
     async def invoke(ctx, path, body=None):
         calls.append(path)
+        if path == "/policies/checkpoint":
+            return {"epoch": data["epoch"], "serverTimeUs": 1000000+len(calls),
+                    "nextTransitionUs": None}
         assert path.startswith("/policies?after=")
         return {"epoch": data["epoch"], "items": list(data["rows"]),
                 "next": 1, "more": False}
@@ -151,10 +156,11 @@ async def test_mcp_still_fetches_java_catalog_and_checks_epoch_each_query(monkey
         assert response["retrieval"]["method"] == "BM25"
         assert response["retrieval"]["epoch"] == 3
     assert cache.statistics()["hits"] == 1
-    assert len(calls) == 6  # Three independent Java catalog/epoch reads PER query.
+    assert len(calls) == 5  # First search: checkpoint+page+checkpoint; warm: 2 checkpoints.
+    assert calls.count("/policies?after=0") == 1  # Java must authorize each warm checkpoint.
     data.update(epoch=4, rows=[])
     newer = await mcp_server.search_policies("退款", None)
     assert newer["evidence"] == []
     assert newer["retrieval"]["epoch"] == 4
     assert cache.statistics()["builds"] == 2
-    assert len(calls) == 9
+    assert len(calls) == 8
