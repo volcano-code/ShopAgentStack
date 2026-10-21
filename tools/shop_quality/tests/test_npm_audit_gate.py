@@ -167,13 +167,13 @@ def test_reject_shrinkwrap_and_symlink_inputs(tmp_path, monkeypatch):
     assert gate.run(root, tmp_path/'second') == 2
 
 
-def test_lock_patch_uses_registry_integrity_and_existing_postcss_range():
+def test_locked_source_maps_use_registry_integrity_and_resolved_postcss_range():
     lock = json.loads((ROOT/'apps/web/package-lock.json').read_text())
     entry = lock['packages']['node_modules/source-map-js']
     assert entry['version'] == '1.2.2'
     assert entry['integrity'] == 'sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw=='
     assert entry['resolved'] == 'https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.2.tgz'
-    assert lock['packages']['node_modules/postcss']['dependencies']['source-map-js'] == '^1.2.1'
+    assert lock['packages']['node_modules/postcss']['dependencies']['source-map-js'] == '^1.2.2'
     assert entry['dev'] is True
     assert len(gate.lock_nodes((ROOT/'apps/web/package-lock.json').read_bytes())) == 175
 
