@@ -130,3 +130,75 @@ async def test_real_mcp_lost_ack_replay_has_single_pending_case():
     Path("/tmp/m23-lost-ack-receipt.json").write_text(json.dumps({
         "order_id":order_id, "operation_id":preview["id"],
         "case_id":operation["case_id"]}),encoding="utf-8")
+
+
+async def test_m21_real_agent_fixture_on_real_java_mcp_mysql():
+    """Execute real Agent HTTP and real Java/MCP on isolated synthetic data.
+
+    The model is explicitly deterministic fixture, not a paid model or a
+    semantic-accuracy claim. No after-sale preview, approval or refund.
+    """
+    import json
+    from pathlib import Path
+    bearer, stranger = await customer(), await customer()
+    order_id = await paid_order(bearer)
+    headers = {"Authorization": bearer}
+    async with httpx.AsyncClient(base_url="http://127.0.0.1:8010",
+                                 timeout=20, trust_env=False) as client:
+        response = await client.post("/sessions", headers=headers)
+        assert response.status_code == 200
+        sid = response.json()["id"]
+        request_id = str(uuid4())
+        payload = {"message": f"请查询订单 {order_id} 的状态。",
+                   "provider": "fixture", "request_id": request_id}
+        opened = await client.post(f"/sessions/{sid}/runs",
+                                   headers=headers, json=payload)
+        assert opened.status_code == 200
+        rid = opened.json()["id"]
+        for _ in range(120):
+            read = await client.get(f"/runs/{rid}?summary_only=true", headers=headers)
+            assert read.status_code == 200
+            status = read.json()["status"]
+            if status not in ("QUEUED", "RUNNING", "CONFIRMING", "STOPPING"):
+                break
+            await asyncio.sleep(.5)
+        assert status == "COMPLETED"
+        owner_denied = await client.get(f"/runs/{rid}?summary_only=true",
+            headers={"Authorization": stranger})
+        assert owner_denied.status_code == 404
+        cursor, events = 0, []
+        for _ in range(12):
+            result = await client.get(f"/runs/{rid}/events/page",
+                                      headers=headers, params={"after":cursor,"limit":100})
+            assert result.status_code == 200
+            page = result.json()
+            assert len(page["events"]) <= 100
+            assert page["next_after"] >= cursor
+            events.extend(page["events"])
+            cursor = page["next_after"]
+            if not page["has_more"]:
+                break
+        else:
+            raise AssertionError("fixture event pagination never exhausted")
+        assert events and all(a["id"] < b["id"] for a,b in zip(events, events[1:]))
+        assert any(e["kind"]=="tool" and e["data"].get("name")=="get_my_order"
+                   and e["data"].get("status")=="started" for e in events)
+        assert any(e["kind"]=="business" and
+                   e["data"].get("order",{}).get("id")==order_id for e in events)
+        assert not any(e["kind"] in ("preview","operation") for e in events)
+        detail = await java(f"/order/detail/{order_id}", bearer=bearer)
+        assert detail["id"] == order_id
+        usage = await client.get(f"/runs/{rid}/usage", headers=headers)
+        assert usage.status_code == 200
+        assert usage.json()["estimated_cost"] is None
+        # Duplicate idempotency IDs return one run, without another execution.
+        repeat = await client.post(f"/sessions/{sid}/runs", headers=headers, json=payload)
+        assert repeat.status_code == 200 and repeat.json()["id"] == rid
+    receipt = {"scope":"M2.1_real_agent_fixture_real_java_mcp_mysql",
+        "fixture_only":True, "paid_model_called":False,
+        "real_agent_http":True, "owner_enforced":True,
+        "real_java_mcp_order_revalidated":True, "bounded_pages":True,
+        "no_business_write_events":True, "request_idempotency":True,
+        "answer_accuracy_measured":False, "funds_safety_verified":False}
+    Path("/tmp/m21-real-service-fixture.json").write_text(
+        json.dumps(receipt, sort_keys=True), encoding="utf-8")
