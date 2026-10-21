@@ -15,6 +15,7 @@ MCP_TESTS = {
     "test_real_mcp_confirmation_ownership_and_replay",
     "test_cancelled_operation_and_invalid_execution_grant",
     "test_real_mcp_lost_ack_replay_has_single_pending_case",
+    "test_m21_real_agent_fixture_on_real_java_mcp_mysql",
 }
 
 
@@ -110,3 +111,16 @@ def verify_pending_submission(data: dict, actual: dict) -> dict:
         if actual[key] != value or isinstance(actual[key], bool):
             raise ValueError(f"lost-ack invariant failed: {key}")
     return {"verified": True, **expected}
+
+
+def verify_m21_real_fixture(record: dict) -> dict:
+    """Only predetermined non-sensitive fixture evidence may become CI evidence."""
+    expected = {"scope":"M2.1_real_agent_fixture_real_java_mcp_mysql",
+        "fixture_only":True, "paid_model_called":False,
+        "real_agent_http":True, "owner_enforced":True,
+        "real_java_mcp_order_revalidated":True, "bounded_pages":True,
+        "no_business_write_events":True, "request_idempotency":True,
+        "answer_accuracy_measured":False, "funds_safety_verified":False}
+    if not isinstance(record, dict) or record != expected:
+        raise ValueError("incomplete or overclaimed M2.1 real-service fixture")
+    return {**expected, "verified": True}
