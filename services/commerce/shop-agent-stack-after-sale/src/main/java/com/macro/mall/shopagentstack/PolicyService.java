@@ -89,6 +89,10 @@ public class PolicyService {
      * database's own time remains strictly before the boundary. Direct SQL
      * updates bypassing enqueueIndex() are not part of this protocol.
      */
+    // Portal's ObjectMapper globally omits NULL fields. Force an explicit
+    // nextTransitionUs:null when no scheduled boundary exists: otherwise
+    // MCP correctly refuses a truncated checkpoint contract.
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.ALWAYS)
     public record CatalogCheckpoint(long epoch,long serverTimeUs,Long nextTransitionUs) {}
     @Transactional(readOnly=true)
     public CatalogCheckpoint checkpoint() {
