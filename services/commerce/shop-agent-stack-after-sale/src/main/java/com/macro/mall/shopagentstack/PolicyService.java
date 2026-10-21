@@ -77,6 +77,46 @@ public class PolicyService {
         db.update("UPDATE shop_agent_stack_knowledge_epoch SET revision=revision+1 WHERE id=1");
         db.update("INSERT INTO shop_agent_stack_policy_index_job(revision) SELECT revision FROM shop_agent_stack_knowledge_epoch WHERE id=1");
     }
+    /**
+     * Lightweight customer-catalog checkpoint. This is NOT a replacement for
+     * execution-grant authentication; the portal controller checks the grant
+     * before exposing it to MCP.
+     *
+     * SQL NOW(6) and the revision are sampled in one statement. The next
+     * future effective_from/effective_to boundary is calculated from public,
+     * published, READY policy metadata only. A cached response is valid only
+     * while both the epoch AND boundary match a fresh checkpoint, and the
+     * database's own time remains strictly before the boundary. Direct SQL
+     * updates bypassing enqueueIndex() are not part of this protocol.
+     */
+    public record CatalogCheckpoint(long epoch,long serverTimeUs,Long nextTransitionUs) {}
+    @Transactional(readOnly=true)
+    public CatalogCheckpoint checkpoint() {
+        String publicMeta = " FROM shop_agent_stack_policy p JOIN shop_agent_stack_policy_meta m ON m.policy_id=p.id "
+                + "WHERE p.status='PUBLISHED' AND m.visibility='CUSTOMER' AND m.index_status='READY' ";
+        String sql = "SELECT e.revision epoch,"
+                + "CAST(UNIX_TIMESTAMP(NOW(6))*1000000 AS UNSIGNED) now_us,"
+                + "(SELECT CAST(UNIX_TIMESTAMP(MIN(m.effective_from))*1000000 AS UNSIGNED)"
+                + publicMeta + "AND m.effective_from>NOW(6)) next_start_us,"
+                + "(SELECT CAST(UNIX_TIMESTAMP(MIN(m.effective_to))*1000000 AS UNSIGNED)"
+                + publicMeta + "AND m.effective_to>NOW(6)) next_end_us "
+                + "FROM shop_agent_stack_knowledge_epoch e WHERE e.id=1";
+        Map<String,Object> row=db.queryForMap(sql);
+        Number epoch=(Number)row.get("epoch");
+        Number now=(Number)row.get("now_us");
+        if(epoch==null || now==null || epoch.longValue()<0 || now.longValue()<=0)
+            throw new IllegalStateException("INVALID_POLICY_CHECKPOINT");
+        Number start=(Number)row.get("next_start_us"),end=(Number)row.get("next_end_us");
+        Long boundary=start==null ? null : start.longValue();
+        if(end!=null) boundary=boundary==null ? end.longValue()
+                                              : Math.min(boundary,end.longValue());
+        // A non-future boundary is not safe to reuse. It can only originate
+        // from malformed clock or SQL metadata, so force an explicit failure.
+        if(boundary!=null && boundary<=now.longValue())
+            throw new IllegalStateException("INVALID_POLICY_BOUNDARY");
+        return new CatalogCheckpoint(epoch.longValue(),now.longValue(),boundary);
+    }
+
     public Map<String,Object> indexState() {
         return Map.of("epoch",db.queryForObject("SELECT revision FROM shop_agent_stack_knowledge_epoch WHERE id=1",Long.class),
             "jobs",db.queryForList("SELECT * FROM shop_agent_stack_policy_index_job ORDER BY revision DESC LIMIT 10"));
