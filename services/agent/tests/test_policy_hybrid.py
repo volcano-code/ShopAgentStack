@@ -5,7 +5,7 @@ from shop_agent_stack import mcp_server
 from shop_agent_stack.policy_snapshot import snapshot_digest
 
 ROW = {"policy_id": 1, "version": 1, "clause_no": 1, "title": "退款", "content": "退款按实付金额办理。",
-       "content_hash": "abc", "family_id": 1}
+       "content_hash": "abc", "family_id": 1, "clause_cursor": 1}
 
 
 @pytest.mark.asyncio
@@ -15,8 +15,12 @@ async def test_hybrid_validates_generation_and_fails_safe(monkeypatch, mode):
     async def invoke(ctx, path, body=None):
         nonlocal calls
         calls += 1
-        return {"epoch": 2 if mode == "changed" and calls >= 3 else 1,
-                "items": [ROW], "next": 1, "more": False}
+        epoch = 2 if mode == "changed" and calls >= 3 else 1
+        if path == "/policies/checkpoint":
+            return {"epoch": epoch, "serverTimeUs": 1000000+calls,
+                    "nextTransitionUs": None}
+        assert path.startswith("/policies?after=")
+        return {"epoch": epoch, "items": [ROW], "next": 1, "more": False}
     monkeypatch.setattr(mcp_server, "invoke", invoke)
     monkeypatch.setenv("SHOP_AGENT_STACK_RETRIEVAL_MODE", "hybrid")
     monkeypatch.setattr(Path, "read_text", lambda *a, **k: "local-test-key")
