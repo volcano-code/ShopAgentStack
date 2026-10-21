@@ -76,6 +76,13 @@ jobs:
           npm exec --no -- playwright install --with-deps chromium
       - name: Browser to real MCP Java RabbitMQ and independent MySQL readback
         run: python -m tools.shop_e2e run
+      - name: Validate M2.1 real-service fixture evidence with exact checkout identity
+        env:
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python -m tools.shop_quality.m21_cloud_gate \
+            --evidence .local/business-e2e/artifacts/evidence.json \
+            --out .local/business-e2e/artifacts/m21-cloud-readiness.json
       - name: Retry cleanup of only this owned disposable project
         if: always()
         run: python -m tools.shop_e2e cleanup
