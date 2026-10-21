@@ -116,3 +116,24 @@ def test_transport_error_never_contains_vendor_payload():
     assert safe=={"failure_type":"TransportOrServiceError",
                  "failure_stage":"mcp-connect","failure_code":"execution_failure"}
     assert "sensitive upstream response" not in str(safe)
+
+
+def test_failure_stage_survives_asyncio_run_unwind():
+    """asyncio.run creates a task context; outer exception handler must see stage."""
+    import asyncio
+    from tools.shop_demo.review_probe import STAGE, safe_failure
+
+    async def run():
+        STAGE.set("hybrid-search")
+        raise RuntimeError("PRIVATE_CREDENTIAL_OR_PROVIDER_RESPONSE")
+
+    try:
+        asyncio.run(run())
+    except RuntimeError as exc:
+        result=safe_failure(exc)
+    else:
+        raise AssertionError("expected synthetic failure")
+    assert result == {"failure_stage":"hybrid-search",
+                      "failure_type":"TransportOrServiceError",
+                      "failure_code":"execution_failure"}
+    assert "PRIVATE" not in str(result)
