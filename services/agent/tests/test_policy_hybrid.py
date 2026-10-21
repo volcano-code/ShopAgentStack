@@ -11,6 +11,12 @@ ROW = {"policy_id": 1, "version": 1, "clause_no": 1, "title": "退款", "content
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["ok", "timeout", "forged", "changed"])
 async def test_hybrid_validates_generation_and_fails_safe(monkeypatch, mode):
+    # Parameterized cases must not inherit a warm snapshot from the preceding
+    # case; otherwise the revision-change fixture may skip its cold catalog.
+    from shop_agent_stack.policy_catalog_cache import PublishedCatalogSnapshot
+    from shop_agent_stack.policy_cache import PublishedPolicyIndexCache
+    monkeypatch.setattr(mcp_server, "_PUBLIC_CATALOG", PublishedCatalogSnapshot())
+    monkeypatch.setattr(mcp_server, "_POLICY_CACHE", PublishedPolicyIndexCache())
     calls = 0
     async def invoke(ctx, path, body=None):
         nonlocal calls
