@@ -4,9 +4,11 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from .business import java, BusinessError
 from .policy_cache import PublishedPolicyIndexCache
+from .policy_catalog_cache import PublishedCatalogSnapshot, same_valid_snapshot
 
 # Only freshly Java-authorized published policy terms; never final answers.
 _POLICY_CACHE = PublishedPolicyIndexCache()
+_PUBLIC_CATALOG = PublishedCatalogSnapshot()
 
 mcp = FastMCP("ShopAgentStack", stateless_http=True, json_response=True,
               transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True,
@@ -75,26 +77,42 @@ async def search_policies(query: str, ctx: Context) -> dict:
     if not query.strip() or len(query)>500:
         raise ToolError("政策问题须为 1–500 字")
     started=time.monotonic()
-    after=0; epoch=None; documents=[]
-    for _ in range(100):
-        page=await invoke(ctx,f"/policies?after={after}")
-        if epoch is not None and page["epoch"]!=epoch:
-            raise ToolError("政策版本在检索中发生变化，请重新查询")
-        epoch=page["epoch"]
-        for row in page["items"]:
-            citation=f"P{row['policy_id']}V{row['version']}C{row['clause_no']}"
-            documents.append(Document(page_content=row["content"],metadata={
-                "doc_id":str(row["family_id"]),"clause_id":citation,"citation_id":citation,
-                "policy_id":row["policy_id"],"clause_no":row["clause_no"],"title":row["title"],
-                "version":row["version"],"content_hash":row["content_hash"],
-                "status":"PUBLISHED","visibility":"CUSTOMER","effective_from":"0001-01-01","effective_to":None}))
-        after=page["next"]
-        if not page["more"]: break
-    else:
-        raise ToolError("政策库超出当前检索预算，请联系管理员")
-    latest=await invoke(ctx,f"/policies?after={after}")
-    if latest["epoch"]!=epoch:
-        raise ToolError("政策版本在检索中发生变化，请重新查询")
+    # The customer's execution grant is rechecked by Java on EVERY
+    # checkpoint, including a warm cache hit. The fast path never allows
+    # stale source access merely because an old revision is still in memory.
+    first=await invoke(ctx,"/policies/checkpoint")
+    from langchain_core.documents import Document
+    from .policy_catalog_cache import checkpoint_identity
+    checkpoint_identity(first)  # strict shape, DB time and boundary checks
+    epoch=first["epoch"]
+    rows=_PUBLIC_CATALOG.read(first)
+    fresh=rows is None
+    if fresh:
+        rows=[]
+        after=0
+        for _ in range(100):
+            page=await invoke(ctx,f"/policies?after={after}")
+            if page["epoch"]!=epoch:
+                raise ToolError("政策版本在检索中发生变化，请重新查询")
+            rows.extend(page["items"])
+            next_after=page["next"]
+            if not page["more"]:
+                break
+            if type(next_after) is not int or next_after<=after:
+                raise ToolError("政策分页游标无效，请重新查询")
+            after=next_after
+        else:
+            raise ToolError("政策库超出当前检索预算，请联系管理员")
+    documents=[]
+    for row in rows:
+        citation=f"P{row['policy_id']}V{row['version']}C{row['clause_no']}"
+        documents.append(Document(page_content=row["content"],metadata={
+            "doc_id":str(row["family_id"]),"clause_id":citation,
+            "citation_id":citation, "policy_id":row["policy_id"],
+            "clause_no":row["clause_no"],"title":row["title"],
+            "version":row["version"],"content_hash":row["content_hash"],
+            "status":"PUBLISHED","visibility":"CUSTOMER",
+            "effective_from":"0001-01-01","effective_to":None}))
     import os
     from pathlib import Path
     import httpx
@@ -122,8 +140,18 @@ async def search_policies(query: str, ctx: Context) -> dict:
             metadata={"method":"HYBRID_RRF_RERANK","degraded":False,"index_generation":result.get("index_generation")}
         except (httpx.HTTPError,OSError,ValueError,KeyError,TypeError):
             metadata={"method":"BM25","degraded":True,"reason":"混合检索暂不可用，已使用当前有效政策的关键词检索"}
-    if (await invoke(ctx,f"/policies?after={after}"))["epoch"]!=epoch:
-        raise ToolError("政策版本在检索中发生变化，请重新查询")
+    latest=await invoke(ctx,"/policies/checkpoint")
+    try:
+        stable=same_valid_snapshot(first,latest)
+    except ValueError:
+        stable=False
+    if not stable:
+        _PUBLIC_CATALOG.clear()
+        raise ToolError("政策版本或生效时刻发生变化，请重新查询")
+    if fresh:
+        # Publishing after the final checkpoint keeps half-fetched policies
+        # out of the cache. Old snapshots cannot match the next checkpoint.
+        _PUBLIC_CATALOG.publish(first,latest,rows)
     return {"evidence":hits,"retrieval":metadata|{"clauses":len(documents),"epoch":epoch,"elapsed_ms":round((time.monotonic()-started)*1000)}}
 
 
