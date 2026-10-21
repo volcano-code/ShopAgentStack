@@ -32,6 +32,16 @@ def specimen():
         if stage in h.ONLINE:
             r["worker"] = {"epoch": epoch, "collection": generation, "digest": "c"*64, "clauses": 1,
                            "model_revisions": CONFIG["model_revisions"]}
+        if stage == "recovered":
+            r["real_search_load"] = {
+                "scope": "real_mcp_java_bge_milvus_policy_search",
+                "sequential_samples": 4, "concurrent_samples": 2,
+                "parallel_clients": 2, "sequential_hybrid": 4,
+                "concurrent_hybrid": 1, "concurrent_degraded": 1,
+                "sequential_p50_ms": 14.2, "sequential_p95_ms": 32.0,
+                "concurrent_p50_ms": 29.0, "concurrent_p95_ms": 41.0,
+                "production_qps_verified": False, "paid_llm_called": False,
+            }
         if index == 0:
             r["policy_ids"].pop("revised")
             r.update(service_auth_verified=True, stale_snapshots_denied=True, repeat_publish_epoch_unchanged=True)
@@ -212,3 +222,23 @@ def test_hybrid_workflow_uses_real_entrypoint_and_reviewed_artifacts():
     text = str(w)
     assert 'run --hybrid --state .local/hybrid-e2e' in text
     assert 'cleanup --state .local/hybrid-e2e' in text
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing", "bad_count", "bad_results", "wrong_scope", "QPS",
+    "paid", "invalid_latency", "missing_latency", "extra_prompt",
+])
+def test_hybrid_end_to_end_load_claims_never_fake_success(mutation):
+    receipts, vector, database = specimen()
+    load = receipts[-1]["real_search_load"]
+    if mutation == "missing": del receipts[-1]["real_search_load"]
+    if mutation == "bad_count": load["sequential_samples"] = 3
+    if mutation == "bad_results": load["sequential_hybrid"] = 2
+    if mutation == "wrong_scope": load["scope"] = "synthetic-pretend"
+    if mutation == "QPS": load["production_qps_verified"] = True
+    if mutation == "paid": load["paid_llm_called"] = True
+    if mutation == "invalid_latency": load["sequential_p50_ms"] = float("nan")
+    if mutation == "missing_latency": del load["concurrent_p95_ms"]
+    if mutation == "extra_prompt": load["private_query"] = "DO_NOT_COPY"
+    with pytest.raises(ValueError):
+        verify((receipts, vector, database))
