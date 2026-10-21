@@ -101,12 +101,12 @@ def test_hybrid_failure_is_precisely_staged_and_strict(field,bad,code):
 def test_read_safe_diagnostic_never_leaks_raw_private_log(tmp_path):
     logs=tmp_path/"logs";logs.mkdir()
     p=logs/"20261020-review-customer-search.log"
-    p.write_text("LOCAL_PRIVATE_DIAGNOSTIC\\n"+
-        '{"failure_stage":"source-revalidation","failure_type":"ProbeViolation","failure_code":"source-hash"}\\n')
+    p.write_text("LOCAL_PRIVATE_DIAGNOSTIC" + chr(10) +
+                 '{"failure_stage":"source-revalidation","failure_type":"ProbeViolation","failure_code":"source-hash"}' + chr(10))
     assert read_safe_probe_failure(tmp_path)=={
         "failure_stage":"source-revalidation","failure_type":"ProbeViolation","failure_code":"source-hash"}
     p.write_text('{"failure_stage":"source-revalidation","failure_type":"Other",'
-                 '"failure_code":"PRIVATE_FIELD"}\\n')
+                 '"failure_code":"PRIVATE_FIELD"}' + chr(10))
     assert read_safe_probe_failure(tmp_path)["failure_type"]=="Unclassified"
 
 
