@@ -31,6 +31,11 @@ public class ShopAgentStackAgentController {
     @GetMapping("/internal/agent/index/catalog") public CommonResult<?> indexCatalog(@RequestHeader(value="X-ShopAgentStack-Index",defaultValue="") String key,@RequestParam(defaultValue="0") long after){indexAuth(key);return CommonResult.success(policies.catalog(after));}
     public record IndexResult(long revision,boolean success,String collection) {}
     @PostMapping("/internal/agent/index/result") public CommonResult<?> indexResult(@RequestHeader(value="X-ShopAgentStack-Index",defaultValue="") String key,@RequestBody IndexResult body){indexAuth(key);policies.indexResult(body.revision(),body.success(),body.collection());return CommonResult.success(null);}
+    @GetMapping("/internal/agent/policies/checkpoint")
+    public CommonResult<?> policyCheckpoint(@RequestHeader("X-ShopAgentStack-Execution") String token) {
+        ops.identify(token); // required per query even on a warm cached snapshot
+        return CommonResult.success(policies.checkpoint());
+    }
     @GetMapping("/internal/agent/policies") public CommonResult<?> policies(@RequestHeader("X-ShopAgentStack-Execution") String token,@RequestParam(defaultValue="0") long after){ops.identify(token);return CommonResult.success(policies.catalog(after));}
     @GetMapping("/internal/agent/policies/{id}") public CommonResult<?> source(@RequestHeader("X-ShopAgentStack-Execution") String token,@PathVariable long id,@RequestParam int version){ops.identify(token);return CommonResult.success(policies.source(id,version));}
     public record Preview(@NotNull @Positive Long orderId,@NotBlank @Size(max=500) String reason) {}
