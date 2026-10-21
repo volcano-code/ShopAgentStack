@@ -158,11 +158,21 @@ def run(state: Path, *, tracing: bool = False, hybrid: bool = False) -> int:
         # The three selected tests exercise real MCP and Java, not an ASGI test double.
         command(state, "mcp", [*base, "exec", "-T", "-e", "SHOP_AGENT_STACK_INTEGRATION=true", "agent", "python", "-m", "pytest",
                     "tests/test_mcp_integration.py", "-q", "-p", "no:cacheprovider", "-k",
-                    "real_mcp_confirmation_ownership_and_replay or cancelled_operation_and_invalid_execution_grant or real_mcp_lost_ack_replay_has_single_pending_case",
+                    "real_mcp_confirmation_ownership_and_replay or cancelled_operation_and_invalid_execution_grant or real_mcp_lost_ack_replay_has_single_pending_case or m21_real_agent_fixture_on_real_java_mcp_mysql",
                     "--junitxml=/tmp/m13-mcp.xml"], timeout=180)
         command(state, "copy-mcp", [*base, "cp", "agent:/tmp/m13-mcp.xml", str(state / "mcp.xml")], timeout=30)
         report["mcp"] = ev.test_report(state / "mcp.xml", ev.MCP_TESTS)
         report["stages"].append("real-mcp-contracts")
+        # Real Agent HTTP and Java/MCP/MySQL query path with deterministic
+        # fixture model. Never infer real LLM quality from this result.
+        fixture_file = state / "receipts" / "m21-fixture.json"
+        command(state, "copy-m21-fixture", [*base, "cp",
+                "agent:/tmp/m21-real-service-fixture.json", str(fixture_file)], timeout=30)
+        if fixture_file.stat().st_size > 4096:
+            raise StageError("oversize-fixture-evidence")
+        report["m21_fixture"] = ev.verify_m21_real_fixture(json.loads(fixture_file.read_text()))
+        report["stages"].append("real-agent-fixture-java-mcp-readback")
+
         command(state, "browser", ["npm", "exec", "--no", "--", "playwright", "test", "--config", "playwright.business.config.ts"],
                 cwd=ROOT / "apps/web", timeout=480, extra={"SHOP_E2E_URL": "http://" + address, "SHOP_E2E_STATE": str(state), "SHOP_E2E_TRACING": str(tracing).lower()})
         report["browser"] = ev.test_report(state / "browser.xml", ev.BROWSER_TESTS)
