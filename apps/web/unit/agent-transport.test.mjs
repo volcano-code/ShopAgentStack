@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {EventDecoder, applyEvent, createLatch, followAgentRun, requestAgent, runValue} from "../src/agentTransport.ts";
+import {EventDecoder, applyEvent, createLatch, followAgentRun, requestAgent, runValue, AgentHttpError} from "../src/agentTransport.ts";
 const enc = new TextEncoder();
 const event = (id, text="你好") => ({id,kind:"assistant_delta",data:{message_id:"m",text}});
 const frame = (e,nl="\n") => `id: ${e.id}${nl}data: ${JSON.stringify(e)}${nl}${nl}`;
@@ -109,4 +109,46 @@ test("perpetually stale snapshots pause without replacing received progress",asy
   if(url.includes("/events?")){streams++;return response(": heartbeat\n\n");}
   return Response.json(run("COMPLETED",[event(1)]));
  }}));assert.equal(streams,3);assert.equal(snapshots.length,0);assert.equal(states.at(-1),"paused");
+});
+
+test("configured SSE read-only recovery calls host bounded reader, not full /runs GET",async()=>{
+  let readerCalls=0; const urls=[];const got=[];
+  const bounded=run("COMPLETED", [event(1), {id:2,kind:"state",data:{status:"COMPLETED"}}]);
+  await followAgentRun("r","synthetic",options({
+    onSnapshot: value => got.push(value),
+    fetcher: async url => {
+      urls.push(url);
+      if(url.includes("/events?")) return response(frame(event(1))+frame({id:2,kind:"state",data:{status:"COMPLETED"}}));
+      throw new Error("Unbounded run endpoint was called");
+    },
+    readSnapshot: async (id,authorization,signal) => {
+      readerCalls++;assert.equal(id,"r");assert.equal(authorization,"synthetic");
+      assert.equal(signal.aborted,false);return bounded;
+    }
+  }));
+  assert.equal(readerCalls,1);assert.equal(got.length,1);
+  assert.deepEqual(got[0],bounded);
+  assert.deepEqual(urls,["/api/agent/runs/r/events?after=0"]);
+});
+test("bounded reader failure cannot replace streamed events or falsely end a run",async()=>{
+  let readerCalls=0;const states=[];
+  await followAgentRun("r","synthetic",options({
+    cursor:5,onConnection:s=>states.push(s),
+    fetcher:async url => {
+      assert.ok(url.includes("/events?"));
+      return response(": heartbeat\\n\\n");
+    },
+    readSnapshot:async()=>{readerCalls++;throw new Error("History exceeds safe budget");},
+  }));
+  assert.equal(readerCalls,3);
+  assert.equal(states.at(-1),"paused");
+});
+
+test("explicit 429 admission refusal never retries a model run or echoes request data",async()=>{
+ let calls=0;
+ await assert.rejects(requestAgent("/sessions/s/runs","synthetic",{message:"PRIVATE_USER_INPUT"},undefined,{
+  fetcher:async()=>{calls++;return Response.json({detail:"PRIVATE_BACKEND_BODY"},{status:429});}
+ }),e=>e instanceof AgentHttpError && e.status===429 &&
+  !e.message.includes("PRIVATE_BACKEND_BODY") && !e.message.includes("PRIVATE_USER_INPUT"));
+ assert.equal(calls,1);
 });
