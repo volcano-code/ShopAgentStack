@@ -90,47 +90,81 @@ def worker():
             digest = snapshot_digest(rows)
             model_hash = hashlib.sha256(json.dumps(CONFIG, sort_keys=True).encode()).hexdigest()[:12]
             collection = f"shop_agent_stack_live_{model_hash}_{epoch}_{digest[:16]}"
+            # The previous implementation held LOCK during model embedding,
+            # Milvus upsert/flush/load and collection creation. That made every
+            # concurrent /search return INDEX_BUSY for the entire rebuild.
+            # Build a candidate generation *outside* the search/publish lock.
+            # Readers on the last accepted generation can continue until the
+            # atomic promotion (and Java epoch checks still reject stale data).
             with LOCK:
-                if ACTIVE is None or ACTIVE["collection"] != collection:
-                    STATUS.update(state="BUILDING", ready=False)
-                    docs = documents(rows)
-                    texts = [r["title"] + "：" + r["content"] for r in rows]
-                    if not client.has_collection(collection_name=collection):
-                        params = client.prepare_index_params()
-                        params.add_index(field_name="vector", index_type="FLAT", metric_type="COSINE")
-                        client.create_collection(collection_name=collection, dimension=encoder.get_sentence_embedding_dimension(),
-                                                 metric_type="COSINE", consistency_level="Strong", index_params=params)
-                    # Stable primary keys make partial-build retry idempotent.
-                    if int(client.get_collection_stats(collection_name=collection)["row_count"]) != len(rows):
-                        if texts:
-                            vectors = encoder.encode(texts, normalize_embeddings=True, batch_size=32, show_progress_bar=False)
-                            client.upsert(collection_name=collection, data=[{"id": i, "vector": v.tolist()} for i, v in enumerate(vectors)])
-                        client.flush(collection_name=collection)
-                    client.load_collection(collection_name=collection)
-                    if int(client.get_collection_stats(collection_name=collection)["row_count"]) != len(rows):
-                        raise RuntimeError("INDEX_COUNT_MISMATCH")
-                    if java("/state")["epoch"] != epoch:
-                        raise RuntimeError("SNAPSHOT_CHANGED")
-                    java("/result", {"revision": epoch, "success": True, "collection": collection})
-                    ACTIVE = {"epoch": epoch, "digest": digest, "collection": collection, "rows": rows,
-                              "documents": docs, "lexical": LexicalIndex(docs, at=date.today())}
-                    # This dedicated service owns only shop_agent_stack_live_* collections.
-                    for old in client.list_collections():
-                        if old.startswith("shop_agent_stack_live_") and old != collection:
-                            client.drop_collection(collection_name=old)
-                else:
-                    client.get_collection_stats(collection_name=collection, timeout=3)
-                    if STATUS["state"] != "READY":
-                        java("/result", {"revision": epoch, "success": True, "collection": collection})
-                STATUS.update(ready=True, state="READY", epoch=epoch, digest=digest,
-                              collection=collection, clauses=len(rows), model_revisions=CONFIG["model_revisions"])
-                STATUS.pop("error", None)
+                rebuilding = ACTIVE is None or ACTIVE["collection"] != collection
+                if rebuilding:
+                    if ACTIVE is None:
+                        STATUS.update(state="BUILDING", ready=False)
+                    else:
+                        STATUS.update(state="REFRESHING")  # old generation remains queryable
+
+            if rebuilding:
+                docs = documents(rows)
+                texts = [r["title"] + "：" + r["content"] for r in rows]
+                if not client.has_collection(collection_name=collection):
+                    params = client.prepare_index_params()
+                    params.add_index(field_name="vector", index_type="FLAT", metric_type="COSINE")
+                    client.create_collection(collection_name=collection,
+                        dimension=encoder.get_sentence_embedding_dimension(),
+                        metric_type="COSINE", consistency_level="Strong",
+                        index_params=params)
+                if int(client.get_collection_stats(collection_name=collection)["row_count"]) != len(rows):
+                    if texts:
+                        vectors = encoder.encode(texts, normalize_embeddings=True,
+                                                 batch_size=32, show_progress_bar=False)
+                        client.upsert(collection_name=collection,
+                            data=[{"id": i, "vector": v.tolist()} for i, v in enumerate(vectors)])
+                    client.flush(collection_name=collection)
+                client.load_collection(collection_name=collection)
+                if int(client.get_collection_stats(collection_name=collection)["row_count"]) != len(rows):
+                    raise RuntimeError("INDEX_COUNT_MISMATCH")
+                if java("/state")["epoch"] != epoch:
+                    raise RuntimeError("SNAPSHOT_CHANGED")
+                candidate = {
+                    "epoch": epoch, "digest": digest, "collection": collection,
+                    "rows": rows, "documents": docs,
+                    "lexical": LexicalIndex(docs, at=date.today())
+                }
+                java("/result", {"revision": epoch, "success": True, "collection": collection})
+                with LOCK:
+                    # No search can remain on the old generation once this
+                    # pointer swap finishes: searches hold LOCK until complete.
+                    ACTIVE = candidate
+                    STATUS.update(ready=True, state="READY", epoch=epoch,
+                                  digest=digest, collection=collection,
+                                  clauses=len(rows), model_revisions=CONFIG["model_revisions"])
+                    STATUS.pop("error", None)
+                # Safe to prune old generations after promotion: all old
+                # readers finished before the atomic LOCK-protected swap.
+                # This dedicated worker does not touch unrelated collections.
+                for old in client.list_collections():
+                    if old.startswith("shop_agent_stack_live_") and old != collection:
+                        client.drop_collection(collection_name=old)
+            else:
+                client.get_collection_stats(collection_name=collection, timeout=3)
+                if STATUS["state"] != "READY":
+                    java("/result", {"revision": epoch, "success": True,
+                                     "collection": collection})
+                with LOCK:
+                    STATUS.update(ready=True, state="READY", epoch=epoch,
+                                  digest=digest, collection=collection,
+                                  clauses=len(rows), model_revisions=CONFIG["model_revisions"])
+                    STATUS.pop("error", None)
             failures = 0
             time.sleep(2)
         except Exception as exc:
             print("Index retry:", type(exc).__name__, flush=True)
             failures += 1
-            STATUS.update(ready=False, state="RETRY", attempts=STATUS["attempts"] + 1, error=type(exc).__name__)
+            with LOCK:
+                STATUS.update(ready=False, state="RETRY",
+                              attempts=STATUS["attempts"] + 1,
+                              error=type(exc).__name__)
             if epoch is not None:
                 try:
                     java("/result", {"revision": epoch, "success": False, "collection": collection})
@@ -142,7 +176,10 @@ def worker():
 def search(body):
     if not isinstance(body.get("query"), str) or not 1 <= len(body["query"].strip()) <= 500:
         raise ValueError("INVALID_QUERY")
-    if not LOCK.acquire(blocking=False):
+    # Bounded queueing avoids false Hybrid degradation from sub-200ms
+    # overlap while retaining single-query CPU admission and fast overload
+    # refusal. Promotion is short; expensive index builds no longer hold LOCK.
+    if not LOCK.acquire(timeout=0.2):
         raise RuntimeError("INDEX_BUSY")
     try:
         active = ACTIVE
