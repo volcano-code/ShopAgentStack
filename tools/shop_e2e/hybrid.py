@@ -72,9 +72,12 @@ def verify(receipts: list[dict], vector: dict, database: dict, config: dict, con
                 "sequential_p50_ms","sequential_p95_ms",
                 "concurrent_p50_ms","concurrent_p95_ms",
                 "production_qps_verified","paid_llm_called",
+                "concurrency_sweep",
             }
             if not isinstance(load, dict) or set(load) != required:
                 raise ValueError("missing or oversized real Hybrid load evidence")
+            from .hybrid_load import validate as validate_load_sweep
+            validate_load_sweep(load["concurrency_sweep"])
             if (load["scope"] != "real_mcp_java_bge_milvus_policy_search"
                 or any(type(load[k]) is not int for k in
                     ("sequential_samples","concurrent_samples","parallel_clients",
