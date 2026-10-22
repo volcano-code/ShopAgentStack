@@ -39,8 +39,9 @@ def test_failed_read_only_requests_are_counted_not_hidden_or_credited():
     called={"n":0}
     async def request():
         called["n"]+=1
+        sequence=called["n"]  # freeze identity before concurrent yields
         await asyncio.sleep(.001)
-        if called["n"] > 8 and called["n"] % 2:
+        if sequence > 8 and sequence % 2:
             raise RuntimeError("PRIVATE_BACKEND_ERROR")
         return _good_response()
     value=asyncio.run(sweep(request,epoch=97,generation="public-97",forbidden=set()))
