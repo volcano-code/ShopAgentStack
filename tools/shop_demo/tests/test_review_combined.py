@@ -114,7 +114,7 @@ def test_transport_error_never_contains_vendor_payload():
     STAGE.set("mcp-connect")
     safe=safe_failure(ValueError("sensitive upstream response"))
     assert safe=={"failure_type":"TransportOrServiceError",
-                 "failure_stage":"mcp-connect","failure_code":"execution_failure"}
+                 "failure_stage":"mcp-connect","failure_code":"execution-failure"}
     assert "sensitive upstream response" not in str(safe)
 
 
@@ -135,5 +135,25 @@ def test_failure_stage_survives_asyncio_run_unwind():
         raise AssertionError("expected synthetic failure")
     assert result == {"failure_stage":"hybrid-search",
                       "failure_type":"TransportOrServiceError",
-                      "failure_code":"execution_failure"}
+                      "failure_code":"execution-failure"}
     assert "PRIVATE" not in str(result)
+
+
+def test_readonly_probe_classifies_timeout_and_group_without_payload():
+    from tools.shop_demo.review_probe import STAGE, safe_failure
+    STAGE.set("hybrid-search")
+    event = safe_failure(ExceptionGroup("UPSTREAM_SECRET", [
+        TimeoutError("INTERNAL_AUTHORIZATION"), TimeoutError("SECOND_SECRET")]))
+    assert event == {"failure_stage": "hybrid-search",
+                     "failure_type": "TransportOrServiceError",
+                     "failure_code": "read-timeout"}
+    assert "SECRET" not in str(event)
+
+
+def test_readonly_probe_fallback_classifies_mcp_rejection_not_backend_root_cause():
+    from tools.shop_demo.review_probe import STAGE, safe_failure
+    STAGE.set("hybrid-search")
+    found = safe_failure(ValueError("RAW_REMOTE_POLICY_ERROR"))
+    assert found["failure_code"] == "mcp-rejected"
+    assert found["failure_stage"] == "hybrid-search"
+    assert "RAW_REMOTE_POLICY_ERROR" not in str(found)

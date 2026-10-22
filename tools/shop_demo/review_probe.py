@@ -29,7 +29,8 @@ PROBE_STAGES = frozenset({"bootstrap","customer-registration","customer-login",
     "source-revalidation","complete"})
 PROBE_CHECKS = frozenset({"contract","search-method","search-epoch",
     "search-clauses","search-evidence","search-degraded","search-generation",
-    "policy-hit","source-visibility","source-hash","source-clause"})
+    "policy-hit","source-visibility","source-hash","source-clause",
+    "read-timeout","connect-failed","mcp-rejected","execution-failure"})
 
 
 class ProbeViolation(ValueError):
@@ -43,11 +44,38 @@ def require(ok: bool, code: str = "contract") -> None:
         raise ProbeViolation(code)
 
 
+def _safe_error_code(error: BaseException) -> str:
+    """Only class identities; never inspect messages, responses or credentials.
+
+    AnyIO TaskGroups often wrap HTTP/client failures in ExceptionGroup.
+    A mixed/unknown group remains unclassified rather than guessing.
+    """
+    if isinstance(error, ProbeViolation):
+        return error.code
+    if isinstance(error, BaseExceptionGroup):
+        codes = {_safe_error_code(e) for e in error.exceptions}
+        return next(iter(codes)) if len(codes) == 1 else "execution-failure"
+    if isinstance(error, TimeoutError):
+        return "read-timeout"
+    cls = type(error)
+    if cls.__module__.startswith(("httpx", "httpcore")):
+        if cls.__name__ in {"ReadTimeout", "ConnectTimeout", "WriteTimeout", "PoolTimeout"}:
+            return "read-timeout"
+        if cls.__name__ in {"ConnectError", "ReadError", "WriteError", "RemoteProtocolError"}:
+            return "connect-failed"
+    if isinstance(error, ValueError) and STAGE.get() == "hybrid-search":
+        # MCP tool errors are converted to ValueError by tools.call; this
+        # is a *suspected* rejection, not proof of index-worker failure.
+        return "mcp-rejected"
+    return "execution-failure"
+
+
 def safe_failure(error: Exception) -> dict:
     stage = STAGE.get()
+    kind = "ProbeViolation" if isinstance(error, ProbeViolation) else "TransportOrServiceError"
     return {"failure_stage": stage if stage in PROBE_STAGES else "bootstrap",
-            "failure_type": "ProbeViolation" if isinstance(error, ProbeViolation) else "TransportOrServiceError",
-            "failure_code": error.code if isinstance(error, ProbeViolation) else "execution_failure"}
+            "failure_type": kind,
+            "failure_code": _safe_error_code(error)}
 
 
 def validate(result: dict, mode: str, epoch: int, generation: str | None) -> None:
