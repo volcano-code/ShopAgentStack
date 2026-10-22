@@ -21,6 +21,19 @@ def evidence(mode="hybrid"):
         "retrieval_probe":{"method":"HYBRID_RRF_RERANK" if mode=="hybrid" else "BM25","epoch":97,"hits":3,
                            "sources_verified":True,"hybrid_verified":mode=="hybrid"},
         "hybrid":{"ready":True,"epoch":97,"generation":"test-generation"},
+        "product_comparison": {
+            "scope":"m26_real_java_mcp_mysql_synthetic_catalog",
+            "live_published_products_compared":2,
+            "authenticated_customer_grant":True,
+            "per_product_java_details":True,
+            "final_details_match_snapshots":True,
+            "rejected_invalid_or_repeated_ids":True,
+            "read_only_beyond_synthetic_registration":True,
+            "non_atomic_catalog_price":True,
+            "real_paid_model_called":False,
+            "external_payment_verified":False,
+            "answer_semantics_verified":False,
+        },
         "browser_tests_passed":1,"viewports":[360,1440],"cleanup_verified":True,
         "live_llm_called":False,"browser_mocked":False}
 
@@ -157,3 +170,26 @@ def test_readonly_probe_fallback_classifies_mcp_rejection_not_backend_root_cause
     assert found["failure_code"] == "mcp-rejected"
     assert found["failure_stage"] == "hybrid-search"
     assert "RAW_REMOTE_POLICY_ERROR" not in str(found)
+
+
+@pytest.mark.parametrize("name,value", [
+    ("live_published_products_compared",1),
+    ("per_product_java_details",False),
+    ("final_details_match_snapshots",False),
+    ("rejected_invalid_or_repeated_ids",False),
+    ("read_only_beyond_synthetic_registration",False),
+    ("real_paid_model_called",True),
+    ("answer_semantics_verified",True),
+])
+def test_real_live_product_comparison_required_not_model_quality(name,value):
+    report=evidence()
+    report["product_comparison"][name]=value
+    with pytest.raises(DemoError):
+        verify(report)
+
+
+def test_product_comparison_rejects_unexpected_private_fields():
+    report=evidence()
+    report["product_comparison"]["bearer"]="PRIVATE_SYNTHETIC_GRANT"
+    with pytest.raises(DemoError):
+        verify(report)
