@@ -176,10 +176,12 @@ def worker():
 def search(body):
     if not isinstance(body.get("query"), str) or not 1 <= len(body["query"].strip()) <= 500:
         raise ValueError("INVALID_QUERY")
-    # Bounded queueing avoids false Hybrid degradation from sub-200ms
-    # overlap while retaining single-query CPU admission and fast overload
-    # refusal. Promotion is short; expensive index builds no longer hold LOCK.
-    if not LOCK.acquire(timeout=0.2):
+    # This worker serializes expensive CPU reranker queries. A 200ms
+    # admission wait caused 4/8 and 7/8 BM25 downgrades in real isolated
+    # CI at concurrency 4 and 8. Allow a bounded 1.5s queue; the MCP HTTP
+    # client has a separate finite deadline and fallback remains explicit.
+    # This is not an unlimited queue or multi-worker performance guarantee.
+    if not LOCK.acquire(timeout=1.5):
         raise RuntimeError("INDEX_BUSY")
     try:
         active = ACTIVE
