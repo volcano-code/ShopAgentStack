@@ -13,6 +13,12 @@ def validate_url(value):
         if url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment or url.port not in (None, 443) or "\\" in value:
             raise ValueError()
         host = url.hostname
+        # A trailing DNS root label can disguise a literal loopback IP
+        # (e.g. 127.0.0.1.) from ipaddress validation. Reject it before
+        # persisting a user-supplied endpoint; the network transport still
+        # independently pins DNS to verified global addresses.
+        if host.endswith("."):
+            raise ValueError("private")
         if host.lower() == "localhost" or host.endswith(".localhost"):
             raise ValueError()
         try:
