@@ -216,6 +216,22 @@ async def execute(stage: str) -> dict:
             require(load_evidence["sequential_hybrid"] == 4,
                     "sequential healthy Hybrid search degraded")
 
+        if load_evidence is not None:
+            # Extended read-only M2.5 workload runs only after the accepted
+            # generation is healthy and all withdrawn/staff policies are excluded.
+            from hybrid_load import sweep, validate as validate_load
+
+            async def fresh_read():
+                async with tools.connect(auth["executionToken"]) as read_session:
+                    return await tools.call(read_session, "search_policies",
+                                            {"query": data["title"]})
+
+            matrix = await sweep(fresh_read, epoch=current["epoch"],
+                                 generation=current["collection"],
+                                 forbidden=forbidden)
+            validate_load(matrix)
+            load_evidence["concurrency_sweep"] = matrix
+
         data["completed"] = [*completed, stage]
         fd = os.open(STATE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as stream:
