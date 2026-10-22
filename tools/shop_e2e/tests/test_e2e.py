@@ -246,3 +246,34 @@ def test_dirty_source_cannot_be_reported_as_committed_acceptance(monkeypatch, tm
     assert report["status"] == "failed" and report["cleanup_verified"]
     assert report["failure_stage"].startswith("worktree-check:")
     assert "image-build" not in calls and "startup" not in calls and "browser" not in calls
+
+
+def test_pending_lost_ack_is_one_case_no_refund_and_consumed_once():
+    data = {"order_id": 7, "operation_id": OP, "case_id": 3}
+    actual = readback(False)
+    actual.update(sale_count=1, case_id=3, operation_status="SUCCEEDED",
+                  operation_case=3, consumed=1)
+    assert ev.verify_pending_submission(data, actual)["verified"] is True
+    for field in actual:
+        broken = dict(actual)
+        broken[field] = "wrong"
+        with pytest.raises(ValueError):
+            ev.verify_pending_submission(data, broken)
+    assert "SELECT JSON_OBJECT" in ev.readback_sql(data)
+
+
+def test_m21_real_service_fixture_gate_refuses_overclaim_and_missing_evidence():
+    record = {"scope":"M2.1_real_agent_fixture_real_java_mcp_mysql",
+        "fixture_only":True,"paid_model_called":False,
+        "real_agent_http":True,"owner_enforced":True,
+        "real_java_mcp_order_revalidated":True,"bounded_pages":True,
+        "no_business_write_events":True,"request_idempotency":True,
+        "answer_accuracy_measured":False,"funds_safety_verified":False}
+    assert ev.verify_m21_real_fixture(record)["verified"] is True
+    for key in record:
+        edited=dict(record)
+        edited[key] = not record[key] if type(record[key]) is bool else "another-scope"
+        with pytest.raises(ValueError):
+            ev.verify_m21_real_fixture(edited)
+    with pytest.raises(ValueError):
+        ev.verify_m21_real_fixture({**record, "answer_correctness": 1.0})

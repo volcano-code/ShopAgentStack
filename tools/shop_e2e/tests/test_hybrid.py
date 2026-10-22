@@ -32,6 +32,29 @@ def specimen():
         if stage in h.ONLINE:
             r["worker"] = {"epoch": epoch, "collection": generation, "digest": "c"*64, "clauses": 1,
                            "model_revisions": CONFIG["model_revisions"]}
+        if stage == "recovered":
+            r["real_search_load"] = {
+                "scope": "real_mcp_java_bge_milvus_policy_search",
+                "sequential_samples": 4, "concurrent_samples": 2,
+                "parallel_clients": 2, "sequential_hybrid": 4,
+                "concurrent_hybrid": 1, "concurrent_degraded": 1,
+                "sequential_p50_ms": 14.2, "sequential_p95_ms": 32.0,
+                "concurrent_p50_ms": 29.0, "concurrent_p95_ms": 41.0,
+                "production_qps_verified": False, "paid_llm_called": False,
+                "concurrency_sweep": {
+                    "scope": "isolated_real_mcp_java_bge_milvus_concurrency",
+                    "levels": [{
+                        "concurrency": c, "requested": 8, "peak_active": c,
+                        "hybrid": 8, "degraded": 0, "errors": 0,
+                        "p50_ms": 100.0, "p95_ms": 200.0,
+                        "wall_ms": 1000.0, "observed_requests_per_sec": 8.0,
+                    } for c in (1,2,4,8)],
+                    "requests_per_level": 8, "total_requests": 32,
+                    "paid_model_called": False, "real_payment_called": False,
+                    "production_qps_verified": False, "production_p99_verified": False,
+                    "baseline_same_runner_comparison": False,
+                },
+            }
         if index == 0:
             r["policy_ids"].pop("revised")
             r.update(service_auth_verified=True, stale_snapshots_denied=True, repeat_publish_epoch_unchanged=True)
@@ -212,3 +235,42 @@ def test_hybrid_workflow_uses_real_entrypoint_and_reviewed_artifacts():
     text = str(w)
     assert 'run --hybrid --state .local/hybrid-e2e' in text
     assert 'cleanup --state .local/hybrid-e2e' in text
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing", "bad_count", "bad_results", "wrong_scope", "QPS",
+    "paid", "invalid_latency", "missing_latency", "extra_prompt",
+])
+def test_hybrid_end_to_end_load_claims_never_fake_success(mutation):
+    receipts, vector, database = specimen()
+    load = receipts[-1]["real_search_load"]
+    if mutation == "missing": del receipts[-1]["real_search_load"]
+    if mutation == "bad_count": load["sequential_samples"] = 3
+    if mutation == "bad_results": load["sequential_hybrid"] = 2
+    if mutation == "wrong_scope": load["scope"] = "synthetic-pretend"
+    if mutation == "QPS": load["production_qps_verified"] = True
+    if mutation == "paid": load["paid_llm_called"] = True
+    if mutation == "invalid_latency": load["sequential_p50_ms"] = float("nan")
+    if mutation == "missing_latency": del load["concurrent_p95_ms"]
+    if mutation == "extra_prompt": load["private_query"] = "DO_NOT_COPY"
+    with pytest.raises(ValueError):
+        verify((receipts, vector, database))
+
+
+@pytest.mark.parametrize("bad", [
+    "missing", "not_real", "overclaimed", "wrong_counts",
+    "unknown_level", "fake_throughput", "negative_time",
+])
+def test_real_hybrid_concurrency_sweep_gated_by_actual_samples(bad):
+    receipt, vector, db = specimen()
+    row=receipt[-1]["real_search_load"]
+    sweep=row["concurrency_sweep"]
+    if bad == "missing": row.pop("concurrency_sweep")
+    elif bad == "not_real": sweep["scope"]="fake"
+    elif bad == "overclaimed": sweep["production_qps_verified"]=True
+    elif bad == "wrong_counts": sweep["levels"][2]["degraded"]=7
+    elif bad == "unknown_level": sweep["levels"][3]["concurrency"]=999
+    elif bad == "fake_throughput": sweep["levels"][1]["observed_requests_per_sec"]=99999
+    elif bad == "negative_time": sweep["levels"][0]["p50_ms"]=-1
+    with pytest.raises(ValueError):
+        verify((receipt,vector,db))

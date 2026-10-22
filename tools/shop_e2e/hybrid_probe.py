@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 import sys
 from uuid import uuid4
@@ -162,6 +163,75 @@ async def execute(stage: str) -> dict:
                     pass
                 else:
                     raise ValueError("invisible/superseded/withdrawn source accessible")
+        load_evidence = None
+        if stage == "recovered":
+            # Actual MCP -> Java catalog/checkpoint -> BGE/Milvus -> revalidation
+            # workload using only the actual ranking worker and no LLM. All runs use
+            # the already-owned synthetic customer and current policy version.
+            async def timed_search():
+                begin = time.perf_counter()
+                async with tools.connect(auth["executionToken"]) as sample_session:
+                    out = await tools.call(sample_session, "search_policies",
+                                           {"query": data["title"]})
+                elapsed = (time.perf_counter() - begin) * 1000
+                meta = out["retrieval"]
+                require(meta["epoch"] == current["epoch"], "load returned stale epoch")
+                require(meta["method"] in ("HYBRID_RRF_RERANK", "BM25"),
+                        "unknown load retrieval mode")
+                is_hybrid = meta["method"] == "HYBRID_RRF_RERANK"
+                require(meta["degraded"] is (not is_hybrid),
+                        "load degradation not explicitly recorded")
+                if is_hybrid:
+                    require(meta["index_generation"] == current["collection"],
+                            "load returned wrong index generation")
+                else:
+                    require(bool(meta.get("reason")),
+                            "load silently fell back")
+                for hit in out["evidence"]:
+                    require(hit["policy_id"] not in forbidden,
+                            "load leaked withdrawn or private policy")
+                return round(elapsed, 3), is_hybrid
+
+            serial = [await timed_search() for _ in range(4)]
+            # Two independent MCP sessions exercise actual worker queueing.
+            # A busy fallback is recorded (not mislabeled a Hybrid hit).
+            parallel = await asyncio.gather(timed_search(), timed_search())
+            def percentile(values, percent):
+                sorted_values = sorted(v[0] for v in values)
+                return sorted_values[max(0, (len(sorted_values)*percent+99)//100-1)]
+            load_evidence = {
+                "scope": "real_mcp_java_bge_milvus_policy_search",
+                "sequential_samples": len(serial),
+                "concurrent_samples": len(parallel),
+                "parallel_clients": 2,
+                "sequential_hybrid": sum(v[1] for v in serial),
+                "concurrent_hybrid": sum(v[1] for v in parallel),
+                "concurrent_degraded": sum(not v[1] for v in parallel),
+                "sequential_p50_ms": percentile(serial, 50),
+                "sequential_p95_ms": percentile(serial, 95),
+                "concurrent_p50_ms": percentile(parallel, 50),
+                "concurrent_p95_ms": percentile(parallel, 95),
+                "production_qps_verified": False, "paid_llm_called": False,
+            }
+            require(load_evidence["sequential_hybrid"] == 4,
+                    "sequential healthy Hybrid search degraded")
+
+        if load_evidence is not None:
+            # Extended read-only M2.5 workload runs only after the accepted
+            # generation is healthy and all withdrawn/staff policies are excluded.
+            from hybrid_load import sweep, validate as validate_load
+
+            async def fresh_read():
+                async with tools.connect(auth["executionToken"]) as read_session:
+                    return await tools.call(read_session, "search_policies",
+                                            {"query": data["title"]})
+
+            matrix = await sweep(fresh_read, epoch=current["epoch"],
+                                 generation=current["collection"],
+                                 forbidden=forbidden)
+            validate_load(matrix)
+            load_evidence["concurrency_sweep"] = matrix
+
         data["completed"] = [*completed, stage]
         fd = os.open(STATE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as stream:
@@ -170,6 +240,8 @@ async def execute(stage: str) -> dict:
                    "epoch": retrieval["epoch"], "generation": retrieval.get("index_generation"), "source_hashes_verified": True,
                    "invisible_sources_denied": True, "hits": safe_hits,
                    "policy_ids": {k: data[k] for k in ("first", "staff", "draft", "revised") if k in data}}
+        if load_evidence is not None:
+            receipt["real_search_load"] = load_evidence
         if current:
             receipt["worker"] = {k: current[k] for k in ("epoch", "digest", "collection", "clauses", "model_revisions")}
         if stage == "initial":

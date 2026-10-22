@@ -51,3 +51,11 @@ test('URL construction cannot change session path or inject paging params',()=>{
   assert.equal(url.searchParams.get('cursor'),'cursor&limit=999');
   assert.ok(url.pathname.includes('..%2Fevil%3F'));
 });
+
+test('history requests opt in to summary while keeping old fixture accepted',()=>{
+  const url = new URL('https://test' + historyPath('s','history'));
+  assert.equal(url.searchParams.get('summary_only'),'true');
+  const summary = { ...run(), events:[], events_complete:false };
+  assert.equal(historyPage(page({runs:[summary]}),'s','history').runs[0].events_complete,false);
+  assert.throws(()=>historyPage(page({runs:[{...summary,events_complete:'false'}]}),'s','history'));
+});

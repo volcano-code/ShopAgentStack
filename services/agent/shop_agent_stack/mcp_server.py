@@ -3,6 +3,12 @@ from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from .business import java, BusinessError
+from .policy_cache import PublishedPolicyIndexCache
+from .policy_catalog_cache import PublishedCatalogSnapshot, same_valid_snapshot
+
+# Only freshly Java-authorized published policy terms; never final answers.
+_POLICY_CACHE = PublishedPolicyIndexCache()
+_PUBLIC_CATALOG = PublishedCatalogSnapshot()
 
 mcp = FastMCP("ShopAgentStack", stateless_http=True, json_response=True,
               transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True,
@@ -68,40 +74,59 @@ async def search_policies(query: str, ctx: Context) -> dict:
     import time
     from datetime import date
     from langchain_core.documents import Document
-    from .knowledge import LexicalIndex
     if not query.strip() or len(query)>500:
         raise ToolError("政策问题须为 1–500 字")
     started=time.monotonic()
-    after=0; epoch=None; documents=[]
-    for _ in range(100):
-        page=await invoke(ctx,f"/policies?after={after}")
-        if epoch is not None and page["epoch"]!=epoch:
-            raise ToolError("政策版本在检索中发生变化，请重新查询")
-        epoch=page["epoch"]
-        for row in page["items"]:
-            citation=f"P{row['policy_id']}V{row['version']}C{row['clause_no']}"
-            documents.append(Document(page_content=row["content"],metadata={
-                "doc_id":str(row["family_id"]),"clause_id":citation,"citation_id":citation,
-                "policy_id":row["policy_id"],"clause_no":row["clause_no"],"title":row["title"],
-                "version":row["version"],"content_hash":row["content_hash"],
-                "status":"PUBLISHED","visibility":"CUSTOMER","effective_from":"0001-01-01","effective_to":None}))
-        after=page["next"]
-        if not page["more"]: break
-    else:
-        raise ToolError("政策库超出当前检索预算，请联系管理员")
-    latest=await invoke(ctx,f"/policies?after={after}")
-    if latest["epoch"]!=epoch:
-        raise ToolError("政策版本在检索中发生变化，请重新查询")
+    # The customer's execution grant is rechecked by Java on EVERY
+    # checkpoint, including a warm cache hit. The fast path never allows
+    # stale source access merely because an old revision is still in memory.
+    first=await invoke(ctx,"/policies/checkpoint")
+    from langchain_core.documents import Document
+    from .policy_catalog_cache import checkpoint_identity
+    checkpoint_identity(first)  # strict shape, DB time and boundary checks
+    epoch=first["epoch"]
+    rows=_PUBLIC_CATALOG.read(first)
+    fresh=rows is None
+    if fresh:
+        rows=[]
+        after=0
+        for _ in range(100):
+            page=await invoke(ctx,f"/policies?after={after}")
+            if page["epoch"]!=epoch:
+                raise ToolError("政策版本在检索中发生变化，请重新查询")
+            rows.extend(page["items"])
+            next_after=page["next"]
+            if not page["more"]:
+                break
+            if type(next_after) is not int or next_after<=after:
+                raise ToolError("政策分页游标无效，请重新查询")
+            after=next_after
+        else:
+            raise ToolError("政策库超出当前检索预算，请联系管理员")
+    documents=[]
+    for row in rows:
+        citation=f"P{row['policy_id']}V{row['version']}C{row['clause_no']}"
+        documents.append(Document(page_content=row["content"],metadata={
+            "doc_id":str(row["family_id"]),"clause_id":citation,
+            "citation_id":citation, "policy_id":row["policy_id"],
+            "clause_no":row["clause_no"],"title":row["title"],
+            "version":row["version"],"content_hash":row["content_hash"],
+            "status":"PUBLISHED","visibility":"CUSTOMER",
+            "effective_from":"0001-01-01","effective_to":None}))
     import os
     from pathlib import Path
     import httpx
     from .policy_snapshot import snapshot_digest
     metadata={"method":"BM25","degraded":False}
-    hits=LexicalIndex(documents,at=date.today()).search(query)
+    # Java is still the authority on EVERY invocation. Reuse only the
+    # expensive public BM25 term statistics for an identical versioned
+    # *freshly fetched* catalog. Never cache a customer's query/result.
+    index, _cache_status = _POLICY_CACHE.get(documents, epoch=epoch, at=date.today())
+    hits=index.search(query)
     if os.getenv("SHOP_AGENT_STACK_RETRIEVAL_MODE", "bm25") == "hybrid":
         try:
             digest=snapshot_digest([d.metadata for d in documents])
-            async with httpx.AsyncClient(timeout=2.5, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=3.5, trust_env=False) as client:
                 response=await client.post("http://retrieval-worker:8020/search",
                     headers={"X-ShopAgentStack-Index":Path("/run/secrets/index_key").read_text().strip()},
                     json={"query":query,"epoch":epoch,"digest":digest})
@@ -115,8 +140,18 @@ async def search_policies(query: str, ctx: Context) -> dict:
             metadata={"method":"HYBRID_RRF_RERANK","degraded":False,"index_generation":result.get("index_generation")}
         except (httpx.HTTPError,OSError,ValueError,KeyError,TypeError):
             metadata={"method":"BM25","degraded":True,"reason":"混合检索暂不可用，已使用当前有效政策的关键词检索"}
-    if (await invoke(ctx,f"/policies?after={after}"))["epoch"]!=epoch:
-        raise ToolError("政策版本在检索中发生变化，请重新查询")
+    latest=await invoke(ctx,"/policies/checkpoint")
+    try:
+        stable=same_valid_snapshot(first,latest)
+    except ValueError:
+        stable=False
+    if not stable:
+        _PUBLIC_CATALOG.clear()
+        raise ToolError("政策版本或生效时刻发生变化，请重新查询")
+    if fresh:
+        # Publishing after the final checkpoint keeps half-fetched policies
+        # out of the cache. Old snapshots cannot match the next checkpoint.
+        _PUBLIC_CATALOG.publish(first,latest,rows)
     return {"evidence":hits,"retrieval":metadata|{"clauses":len(documents),"epoch":epoch,"elapsed_ms":round((time.monotonic()-started)*1000)}}
 
 
@@ -145,6 +180,28 @@ async def get_product(product_id: int, ctx: Context) -> dict:
     from .catalog import with_snapshot
     if product_id<=0: raise ToolError("商品编号不合法")
     return {"product":with_snapshot(await invoke(ctx,f"/products/{product_id}"))}
+
+
+@mcp.tool()
+async def compare_products(product_ids: list[int], ctx: Context) -> dict:
+    """只比较先前搜索出的2至3个已上架商品ID；逐件读取Java当前商品、SKU库存与标价，返回[G商品ID]证据。无货/下架或ID无效时整体失败，不使用历史缓存。逐件读回非同一数据库事务，最终回答须逐件复核；商品标价不代表最终结算报价。"""
+    from .catalog import with_snapshot
+    if (type(product_ids) is not list or not 2 <= len(product_ids) <= 3
+            or any(type(pid) is not int or pid <= 0 or pid > 2**53-1
+                   for pid in product_ids)
+            or len(set(product_ids)) != len(product_ids)):
+        raise ToolError("请选择2至3个不重复的有效商品ID比较")
+    products = []
+    for pid in product_ids:
+        # The same execution grant is authenticated by Java for EVERY detail.
+        # Stop on any missing/unlisted product; no misleading partial table.
+        current = await invoke(ctx, f"/products/{pid}")
+        if type(current) is not dict or type(current.get("id")) is not int or current["id"] != pid:
+            raise ToolError("商品详情与请求编号不一致")
+        products.append(with_snapshot(current))
+    return {"products": products, "comparison_kind": "sequential_live_product_details",
+            "atomic_snapshot": False, "price_kind": "catalog_price_not_checkout_quote",
+            "currency": "CNY", "requires_final_product_revalidation": True}
 
 
 app = mcp.streamable_http_app()

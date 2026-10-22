@@ -3,8 +3,8 @@ from copy import deepcopy
 from pathlib import Path
 import pytest
 import yaml
-from tools.shop_demo.review_probe import validate
-from tools.shop_demo.review_smoke import verify
+from tools.shop_demo.review_probe import validate, ProbeViolation, safe_failure, STAGE
+from tools.shop_demo.review_smoke import verify, read_safe_probe_failure
 from tools.shop_demo.runtime import DemoError
 ROOT=Path(__file__).resolve().parents[3]
 
@@ -21,6 +21,19 @@ def evidence(mode="hybrid"):
         "retrieval_probe":{"method":"HYBRID_RRF_RERANK" if mode=="hybrid" else "BM25","epoch":97,"hits":3,
                            "sources_verified":True,"hybrid_verified":mode=="hybrid"},
         "hybrid":{"ready":True,"epoch":97,"generation":"test-generation"},
+        "product_comparison": {
+            "scope":"m26_real_java_mcp_mysql_synthetic_catalog",
+            "live_published_products_compared":2,
+            "authenticated_customer_grant":True,
+            "per_product_java_details":True,
+            "final_details_match_snapshots":True,
+            "rejected_invalid_or_repeated_ids":True,
+            "read_only_beyond_synthetic_registration":True,
+            "non_atomic_catalog_price":True,
+            "real_paid_model_called":False,
+            "external_payment_verified":False,
+            "answer_semantics_verified":False,
+        },
         "browser_tests_passed":1,"viewports":[360,1440],"cleanup_verified":True,
         "live_llm_called":False,"browser_mocked":False}
 
@@ -79,3 +92,104 @@ def test_probe_does_not_import_models_or_mutation_tools():
     names=[x.args[1].value for x in ast.walk(tree) if isinstance(x,ast.Call) and
            isinstance(x.func,ast.Attribute) and x.func.attr=="call" and len(x.args)>1 and isinstance(x.args[1],ast.Constant)]
     assert set(names)=={"search_policies","get_policy_source"}
+
+
+@pytest.mark.parametrize("field,bad,code", [
+    ("method","BM25","search-method"),
+    ("epoch",96,"search-epoch"),
+    ("clauses",0,"search-clauses"),
+    ("degraded",True,"search-degraded"),
+    ("index_generation","other","search-generation"),
+])
+def test_hybrid_failure_is_precisely_staged_and_strict(field,bad,code):
+    item=search();item["retrieval"][field]=bad
+    STAGE.set("hybrid-search")
+    with pytest.raises(ProbeViolation) as exc:
+        validate(item,"hybrid",97,"test-generation")
+    assert safe_failure(exc.value)=={
+        "failure_type":"ProbeViolation","failure_stage":"hybrid-search",
+        "failure_code":code}
+
+
+def test_read_safe_diagnostic_never_leaks_raw_private_log(tmp_path):
+    logs=tmp_path/"logs";logs.mkdir()
+    p=logs/"20261020-review-customer-search.log"
+    p.write_text("LOCAL_PRIVATE_DIAGNOSTIC" + chr(10) +
+                 '{"failure_stage":"source-revalidation","failure_type":"ProbeViolation","failure_code":"source-hash"}' + chr(10))
+    assert read_safe_probe_failure(tmp_path)=={
+        "failure_stage":"source-revalidation","failure_type":"ProbeViolation","failure_code":"source-hash"}
+    p.write_text('{"failure_stage":"source-revalidation","failure_type":"Other",'
+                 '"failure_code":"PRIVATE_FIELD"}' + chr(10))
+    assert read_safe_probe_failure(tmp_path)["failure_type"]=="Unclassified"
+
+
+def test_transport_error_never_contains_vendor_payload():
+    STAGE.set("mcp-connect")
+    safe=safe_failure(ValueError("sensitive upstream response"))
+    assert safe=={"failure_type":"TransportOrServiceError",
+                 "failure_stage":"mcp-connect","failure_code":"execution-failure"}
+    assert "sensitive upstream response" not in str(safe)
+
+
+def test_failure_stage_survives_asyncio_run_unwind():
+    """asyncio.run creates a task context; outer exception handler must see stage."""
+    import asyncio
+    from tools.shop_demo.review_probe import STAGE, safe_failure
+
+    async def run():
+        STAGE.set("hybrid-search")
+        raise RuntimeError("PRIVATE_CREDENTIAL_OR_PROVIDER_RESPONSE")
+
+    try:
+        asyncio.run(run())
+    except RuntimeError as exc:
+        result=safe_failure(exc)
+    else:
+        raise AssertionError("expected synthetic failure")
+    assert result == {"failure_stage":"hybrid-search",
+                      "failure_type":"TransportOrServiceError",
+                      "failure_code":"execution-failure"}
+    assert "PRIVATE" not in str(result)
+
+
+def test_readonly_probe_classifies_timeout_and_group_without_payload():
+    from tools.shop_demo.review_probe import STAGE, safe_failure
+    STAGE.set("hybrid-search")
+    event = safe_failure(ExceptionGroup("UPSTREAM_SECRET", [
+        TimeoutError("INTERNAL_AUTHORIZATION"), TimeoutError("SECOND_SECRET")]))
+    assert event == {"failure_stage": "hybrid-search",
+                     "failure_type": "TransportOrServiceError",
+                     "failure_code": "read-timeout"}
+    assert "SECRET" not in str(event)
+
+
+def test_readonly_probe_fallback_classifies_mcp_rejection_not_backend_root_cause():
+    from tools.shop_demo.review_probe import STAGE, safe_failure
+    STAGE.set("hybrid-search")
+    found = safe_failure(ValueError("RAW_REMOTE_POLICY_ERROR"))
+    assert found["failure_code"] == "mcp-rejected"
+    assert found["failure_stage"] == "hybrid-search"
+    assert "RAW_REMOTE_POLICY_ERROR" not in str(found)
+
+
+@pytest.mark.parametrize("name,value", [
+    ("live_published_products_compared",1),
+    ("per_product_java_details",False),
+    ("final_details_match_snapshots",False),
+    ("rejected_invalid_or_repeated_ids",False),
+    ("read_only_beyond_synthetic_registration",False),
+    ("real_paid_model_called",True),
+    ("answer_semantics_verified",True),
+])
+def test_real_live_product_comparison_required_not_model_quality(name,value):
+    report=evidence()
+    report["product_comparison"][name]=value
+    with pytest.raises(DemoError):
+        verify(report)
+
+
+def test_product_comparison_rejects_unexpected_private_fields():
+    report=evidence()
+    report["product_comparison"]["bearer"]="PRIVATE_SYNTHETIC_GRANT"
+    with pytest.raises(DemoError):
+        verify(report)

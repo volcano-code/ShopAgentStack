@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from uuid import UUID
 from typing import Literal
@@ -13,6 +14,40 @@ from .preferences import Preferences
 from fastapi.exceptions import RequestValidationError
 
 tasks: dict[str, asyncio.Task] = {}
+
+# The DB admission lease is longer than this outbound request deadline.
+MODEL_PROBE_TIMEOUT_SECONDS = 20
+
+
+def finish_background_run(rid: str, member: int, completed: asyncio.Task):
+    """Consume task failure and recover only QUEUED/RUNNING state.
+
+    Never log exception text, traceback locals, model provider bodies or
+    credentials. This callback may run *after* an explicit stop or confirmation;
+    the SQLite compare-and-swap leaves those business states intact.
+    """
+    outcome = "FAILED"
+    try:
+        error = completed.exception()
+    except asyncio.CancelledError:
+        outcome = "INTERRUPTED"
+    except BaseException as error:
+        logging.getLogger(__name__).warning(
+            "Unable to inspect completed Agent task type=%s", type(error).__name__)
+    else:
+        if error is not None:
+            logging.getLogger(__name__).warning(
+                "Unhandled Agent task failure type=%s", type(error).__name__)
+    try:
+        store.close_abandoned_run(rid, member, outcome)
+    except Exception as error:
+        logging.getLogger(__name__).warning(
+            "Agent task state recovery failed type=%s", type(error).__name__)
+    finally:
+        # Do not remove a replacement mapping in the unlikely event that
+        # an older completed task callback fires late.
+        if tasks.get(rid) is completed:
+            tasks.pop(rid, None)
 store: Store
 preferences: Preferences
 
@@ -50,7 +85,7 @@ async def invalid_input(request, exc):
 @app.exception_handler(BusinessError)
 @app.exception_handler(StoreError)
 async def controlled_error(request,exc):
-    code=exc.code if exc.code in (400,401,403,404,409,503) else 400
+    code=exc.code if exc.code in (400,401,403,404,409,429,503) else 400
     return JSONResponse({"detail":str(exc)},status_code=code)
 
 
@@ -113,14 +148,27 @@ async def test_provider(provider: str,authorization: str=Header(default="")):
     config=preferences.personal(auth["memberId"],provider)
     if not config:
         raise HTTPException(400,"请先保存个人模型配置")
+    # A model connection test can cost real tokens. Admission is an atomic,
+    # owner-scoped SQLite write, not an in-memory semaphore. Do not create
+    # another probe or retry automatically when a timeout/network error occurs.
+    ticket = await asyncio.to_thread(store.begin_provider_test, auth["memberId"])
     try:
-        message,usage=await providers.complete(provider,[{"role":"user","content":"Reply with OK."}], [{"type":"function","function":{"name":"connection_check","description":"Connection test only","parameters":{"type":"object","properties":{}}}}],config=config)
-        if not message.get("content") and not message.get("tool_calls"):
-            raise ValueError()
+        async with asyncio.timeout(MODEL_PROBE_TIMEOUT_SECONDS):
+            message, usage = await providers.complete(
+                provider, [{"role":"user","content":"Reply with OK."}],
+                [{"type":"function","function":{"name":"connection_check",
+                  "description":"Connection test only",
+                  "parameters":{"type":"object","properties":{}}}}],
+                config=config)
+            if not message.get("content") and not message.get("tool_calls"):
+                raise ValueError()
         return {"ok":True,"message":"基础连接成功；工具调用能力请在对话中进一步验证"}
     except Exception:
-        # Includes transport errors and any provider body; do not echo submitted credentials.
+        # Includes timeouts and provider bodies; don't echo keys, prompts
+        # or transport exception details. CancelledError still propagates.
         raise HTTPException(400,"连接测试失败，请检查地址、模型、密钥及网络；配置仍已保存") from None
+    finally:
+        await asyncio.to_thread(store.finish_provider_test, ticket, auth["memberId"])
 
 
 @app.get("/sessions")
@@ -145,9 +193,11 @@ async def get_session(sid: str, authorization: str=Header(default="")):
 async def get_history(sid: str, limit: int=Query(default=12,ge=1,le=50),
                       cursor: str | None=Query(default=None,min_length=1,max_length=512),
                       lane: Literal["history", "attention"]="history",
+                      summary_only: bool=Query(default=False),
                       authorization: str=Header(default="")):
     auth=await identity(authorization)
-    page=await asyncio.to_thread(store.session_page, sid, auth["memberId"], limit=limit, cursor=cursor, lane=lane)
+    page=await asyncio.to_thread(store.session_page, sid, auth["memberId"],
+                                 limit=limit, cursor=cursor, lane=lane, summary_only=summary_only)
     return JSONResponse(page, headers={"Cache-Control":"no-store"})
 
 
@@ -172,32 +222,83 @@ async def create_run(sid: str,body: Message,authorization: str=Header(default=""
         raise HTTPException(503,"所选模型尚未配置")
     rid,created=store.create_run(sid,auth["memberId"],str(body.request_id),body.message.strip(),body.provider)
     if created:
-        config = None if body.provider == "fixture" else preferences.resolve(auth["memberId"],body.provider)
-        tasks[rid]=asyncio.create_task(observability.execute_run(runtime.execute,store,store.run(rid,auth["memberId"]),auth["memberId"],auth["executionToken"],model_config=config))
-        tasks[rid].add_done_callback(lambda task:tasks.pop(rid,None))
+        # Persisted QUEUED is a claim of responsibility. If resolution or task
+        # creation fails, transition it to FAILED before returning to the caller.
+        # Never leak model credentials or silently schedule a replacement run.
+        try:
+            config = None if body.provider == "fixture" else preferences.resolve(auth["memberId"],body.provider)
+            run = store.run(rid,auth["memberId"])
+            task = asyncio.create_task(observability.execute_run(
+                runtime.execute,store,run,auth["memberId"],auth["executionToken"],model_config=config))
+        except Exception:
+            store.fail_unstarted(rid,auth["memberId"])
+            # This request has a known, durable run ID and was NOT launched.
+            # Return that FAILED (or concurrently STOPPING) run as a normal
+            # idempotent response. Returning a transport 503 would leave the
+            # browser reusing its old request ID and require another roundtrip
+            # before the user can safely submit a fresh request.
+            return store.run(rid,auth["memberId"])
+        tasks[rid]=task
+        task.add_done_callback(lambda done: finish_background_run(rid, auth["memberId"], done))
     return store.run(rid,auth["memberId"])
 
 
 @app.get("/runs/{rid}")
-async def get_run(rid: str,authorization: str=Header(default="")):
+async def get_run(rid: str,summary_only: bool=Query(default=False),
+                  authorization: str=Header(default="")):
     auth=await identity(authorization)
-    return store.run(rid,auth["memberId"])
+    return (store.run_header(rid,auth["memberId"]) if summary_only
+            else store.run(rid,auth["memberId"]))
+
+
+@app.get("/runs/{rid}/usage")
+async def run_usage(rid: str, authorization: str=Header(default="")):
+    auth = await identity(authorization)
+    result = await asyncio.to_thread(store.usage_summary, rid, auth["memberId"])
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/runs/{rid}/events/page")
+async def event_page(rid: str, after: int=Query(default=0,ge=0),
+                     limit: int=Query(default=100,ge=1,le=100),
+                     authorization: str=Header(default="")):
+    auth=await identity(authorization)
+    page=await asyncio.to_thread(store.events_page,rid,auth["memberId"],after=after,limit=limit)
+    return JSONResponse(page,headers={"Cache-Control":"no-store"})
 
 
 @app.get("/runs/{rid}/events")
 async def events(rid: str,request: Request,after: int=0,authorization: str=Header(default="")):
     auth=await identity(authorization)
-    store.run(rid,auth["memberId"])
+    await asyncio.to_thread(store.run_status, rid, auth["memberId"])
     async def stream():
         cursor=max(after,0)
         for _ in range(240):
             if await request.is_disconnected():
                 return
-            for event in store.events(rid,cursor):
-                cursor=event["id"]
-                yield f"id: {cursor}\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
-            if store.run(rid,auth["memberId"])["status"] not in ("RUNNING","QUEUED","CONFIRMING"):
-                return
+            # Each DB read is bounded; exhaust the tail before interpreting terminal state.
+            # The cursor advances only after the event has been yielded.
+            while True:
+                page = await asyncio.to_thread(store.events_page, rid, auth["memberId"], after=cursor, limit=100)
+                for event in page["events"]:
+                    if await request.is_disconnected():
+                        return
+                    yield f"id: {event['id']}\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
+                    cursor=event["id"]
+                if not page["has_more"]:
+                    break
+            if await asyncio.to_thread(store.run_status, rid, auth["memberId"]) not in ("RUNNING","QUEUED","CONFIRMING","STOPPING"):
+                # One last read covers events committed after the prior page and
+                # before the observed terminal status. Do not lose final answer.
+                while True:
+                    tail = await asyncio.to_thread(store.events_page, rid, auth["memberId"], after=cursor, limit=100)
+                    for event in tail["events"]:
+                        if await request.is_disconnected():
+                            return
+                        yield f"id: {event['id']}\ndata: {json.dumps(event,ensure_ascii=False)}\n\n"
+                        cursor=event["id"]
+                    if not tail["has_more"]:
+                        return
             yield ": heartbeat\n\n"
             await asyncio.sleep(.5)
     return StreamingResponse(stream(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
@@ -216,10 +317,10 @@ class Confirm(BaseModel):
 
 
 async def reconcile_run(run,auth):
-    preview=preview_of(run)
+    preview=store.latest_preview(run["id"],auth["memberId"])
     op=await java("/shop_agent_stack/internal/agent/operations/"+preview["id"],execution=auth["executionToken"])
     if op["status"]=="SUCCEEDED":
-        if not any(e["kind"]=="operation" and e["data"].get("id")==op["id"] for e in store.events(run["id"])):
+        if not store.operation_recorded(run["id"],auth["memberId"],op["id"]):
             store.emit(run["id"],"operation",op)
         store.state(run["id"],"COMPLETED","业务提交已核实")
     elif op["status"] == "CANCELLED" or op.get("expired"):
@@ -232,12 +333,12 @@ async def reconcile_run(run,auth):
 @app.post("/runs/{rid}/confirm")
 async def confirm(rid: str,body: Confirm,authorization: str=Header(default="")):
     auth=await identity(authorization)
-    run=store.run(rid,auth["memberId"])
-    preview=preview_of(run)
+    run=store.run_header(rid,auth["memberId"])
+    preview=store.latest_preview(rid,auth["memberId"])
     if str(body.operation_id)!=preview["id"]:
         raise HTTPException(400,"确认操作与预览不匹配")
     if run["status"]=="COMPLETED":
-        return run
+        return store.run(rid,auth["memberId"])
     store.begin_confirm(rid)
     try:
         await java(f"/shop_agent_stack/agent/operations/{preview['id']}/confirm",bearer=authorization,body={"confirmationToken":body.confirmation_token})
@@ -253,7 +354,7 @@ async def confirm(rid: str,body: Confirm,authorization: str=Header(default="")):
 @app.post("/runs/{rid}/reconcile")
 async def reconcile(rid: str,authorization: str=Header(default="")):
     auth=await identity(authorization)
-    run=store.run(rid,auth["memberId"])
+    run=store.run_header(rid,auth["memberId"])
     if run["status"] != "UNCERTAIN":
         raise HTTPException(409,"仅待核实状态需要核对结果，请刷新会话")
     return await reconcile_run(run,auth)
@@ -262,7 +363,7 @@ async def reconcile(rid: str,authorization: str=Header(default="")):
 @app.post("/runs/{rid}/stop")
 async def stop(rid: str,authorization: str=Header(default="")):
     auth=await identity(authorization)
-    run=store.run(rid,auth["memberId"])
+    run=store.run_header(rid,auth["memberId"])
     if run["status"] in ("CONFIRMING","UNCERTAIN"):
         raise HTTPException(409,"业务提交结果需要先核实，停止对话不能撤销业务")
     if run["status"] not in ("RUNNING","QUEUED","WAITING_CONFIRMATION"):
@@ -272,13 +373,15 @@ async def stop(rid: str,authorization: str=Header(default="")):
         task=tasks[rid]
         task.cancel()
         await asyncio.gather(task,return_exceptions=True)
-    run=store.run(rid,auth["memberId"])
     try:
-        for event in run["events"]:
-            if event["kind"]=="preview":
-                await java(f"/shop_agent_stack/agent/operations/{event['data']['id']}/cancel",bearer=authorization,body={})
+        preview_ids = store.cancellation_preview_ids(rid,auth["memberId"])
+        for operation_id in preview_ids:
+            await java(f"/shop_agent_stack/agent/operations/{operation_id}/cancel",bearer=authorization,body={})
     except Exception:
         store.state(rid,"UNCERTAIN","取消结果待核实，请核实操作状态")
-        return store.run(rid,auth["memberId"])
+        # Corrupt/oversized legacy previews may make the old full-event route
+        # unusable. Return only owner-scoped state; do not parse or replay the
+        # unsafe log or silently treat cancellation as complete.
+        return store.run_header(rid,auth["memberId"])
     store.state(rid,"STOPPED","已停止；已提交的业务不会被撤销")
     return store.run(rid,auth["memberId"])

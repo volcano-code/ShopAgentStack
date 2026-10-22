@@ -28,7 +28,8 @@ def _anchor(token, sid, lane, error):
         raise error("历史游标无效，请重新打开会话", 400) from None
 
 
-def session_page(store, sid, member, *, limit=12, cursor=None, lane="history", error):
+def session_page(store, sid, member, *, limit=12, cursor=None, lane="history",
+                 summary_only=False, error):
     """Each page is one SQLite read snapshot; separate pages see current statuses.
 
     History contains ALL statuses. Attention separately pages anything not safely
@@ -62,9 +63,12 @@ def session_page(store, sid, member, *, limit=12, cursor=None, lane="history", e
             last = rows[-1]
             remaining = db.execute(f"SELECT COUNT(*) FROM runs WHERE {where} AND (created,id)<(?,?)", (*args, last["created"], last["id"])).fetchone()[0]
         # Only selected payloads are decoded; one batched event query (not N+1).
-        runs = [dict(row, events=[]) for row in reversed(rows)]
+        if type(summary_only) is not bool:
+            raise error("历史请求参数无效", 400)
+        runs = [dict(row, events=[], **({"events_complete": False} if summary_only else {}))
+                for row in reversed(rows)]
         by_id = {run["id"]: run for run in runs}
-        if runs:
+        if runs and not summary_only:
             marks = ",".join("?" for _ in runs)
             for event in db.execute(f"SELECT id,run_id,kind,payload FROM events WHERE run_id IN ({marks}) ORDER BY id", tuple(by_id)):
                 by_id[event["run_id"]]["events"].append({"id": event["id"], "kind": event["kind"], "data": json.loads(event["payload"])})
