@@ -7,7 +7,7 @@ from mcp.client.streamable_http import streamable_http_client
 from .observability import observe_tool
 from .observability_transport import MCPTraceBridge
 
-MODEL_TOOLS = {"list_my_orders", "get_my_order", "list_my_after_sales", "preview_after_sale", "get_operation_status", "search_policies", "search_products", "get_product"}
+MODEL_TOOLS = {"list_my_orders", "get_my_order", "list_my_after_sales", "preview_after_sale", "get_operation_status", "search_policies", "search_products", "get_product", "compare_products"}
 
 
 @asynccontextmanager
