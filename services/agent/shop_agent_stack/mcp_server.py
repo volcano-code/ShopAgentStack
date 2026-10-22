@@ -182,4 +182,26 @@ async def get_product(product_id: int, ctx: Context) -> dict:
     return {"product":with_snapshot(await invoke(ctx,f"/products/{product_id}"))}
 
 
+@mcp.tool()
+async def compare_products(product_ids: list[int], ctx: Context) -> dict:
+    """只比较先前搜索出的2至3个已上架商品ID；逐件读取Java当前商品、SKU库存与标价，返回[G商品ID]证据。无货/下架或ID无效时整体失败，不使用历史缓存。逐件读回非同一数据库事务，最终回答须逐件复核；商品标价不代表最终结算报价。"""
+    from .catalog import with_snapshot
+    if (type(product_ids) is not list or not 2 <= len(product_ids) <= 3
+            or any(type(pid) is not int or pid <= 0 or pid > 2**53-1
+                   for pid in product_ids)
+            or len(set(product_ids)) != len(product_ids)):
+        raise ToolError("请选择2至3个不重复的有效商品ID比较")
+    products = []
+    for pid in product_ids:
+        # The same execution grant is authenticated by Java for EVERY detail.
+        # Stop on any missing/unlisted product; no misleading partial table.
+        current = await invoke(ctx, f"/products/{pid}")
+        if type(current) is not dict or type(current.get("id")) is not int or current["id"] != pid:
+            raise ToolError("商品详情与请求编号不一致")
+        products.append(with_snapshot(current))
+    return {"products": products, "comparison_kind": "sequential_live_product_details",
+            "atomic_snapshot": False, "price_kind": "catalog_price_not_checkout_quote",
+            "currency": "CNY", "requires_final_product_revalidation": True}
+
+
 app = mcp.streamable_http_app()
