@@ -22,6 +22,19 @@ def verify(report: dict) -> None:
     expect(probe["method"]==("HYBRID_RRF_RERANK" if report["retrieval"]=="hybrid" else "BM25"), "wrong search method")
     expect(probe["epoch"]==db["epoch"] and probe["sources_verified"] is True and 0<probe["hits"]<=20, "invalid search evidence")
     expect(probe["hybrid_verified"] is (report["retrieval"]=="hybrid"), "hybrid scope mismatch")
+    expect(report["product_comparison"] == {
+        "scope": "m26_real_java_mcp_mysql_synthetic_catalog",
+        "live_published_products_compared": 2,
+        "authenticated_customer_grant": True,
+        "per_product_java_details": True,
+        "final_details_match_snapshots": True,
+        "rejected_invalid_or_repeated_ids": True,
+        "read_only_beyond_synthetic_registration": True,
+        "non_atomic_catalog_price": True,
+        "real_paid_model_called": False,
+        "external_payment_verified": False,
+        "answer_semantics_verified": False,
+    }, "real Java/MCP product comparison acceptance missing")
     expect(report["browser_tests_passed"]==1 and report["viewports"]==[360,1440], "missing browser checks")
     expect(report["cleanup_verified"] is True and report["live_llm_called"] is False and report["browser_mocked"] is False, "invalid execution scope")
     if report["retrieval"]=="hybrid":
@@ -99,6 +112,12 @@ def run(retrieval: str="bm25") -> int:
             report["probe_failure"] = read_safe_probe_failure(state)
             raise
         report["retrieval_probe"] = json.loads(result)
+        product_probe=(ROOT/"tools/shop_demo/product_compare_probe.py").read_text()
+        compared=runtime.command(state,"review-live-product-comparison",[
+            *runtime.base(state,owner["project"]), "exec", "-T", "-w", "/app",
+            "agent", "python", "-c", product_probe], timeout=120)
+        # The exact fields and values are independently checked by verify().
+        report["product_comparison"]=json.loads(compared)
         code=0
     except Exception as error:
         report["failure_type"]=type(error).__name__;report["failure_locations"]=failure_locations(error)
