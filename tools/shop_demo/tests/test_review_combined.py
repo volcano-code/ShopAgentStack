@@ -135,7 +135,7 @@ def test_failure_stage_survives_asyncio_run_unwind():
         raise AssertionError("expected synthetic failure")
     assert result == {"failure_stage":"hybrid-search",
                       "failure_type":"TransportOrServiceError",
-                      "failure_code":"execution_failure"}
+                      "failure_code":"execution-failure"}
     assert "PRIVATE" not in str(result)
 
 
