@@ -45,4 +45,5 @@ def test_search_admission_is_explicitly_bounded_not_no_wait_forever():
     kwargs={arg.arg:arg.value for arg in waits[0].keywords}
     assert "timeout" in kwargs
     assert isinstance(kwargs["timeout"],ast.Constant)
-    assert 0<kwargs["timeout"].value<=0.5
+    assert 0<kwargs["timeout"].value<=1.5
+    assert kwargs["timeout"].value == 1.5

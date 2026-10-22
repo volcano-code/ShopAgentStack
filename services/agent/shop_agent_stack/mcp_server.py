@@ -126,7 +126,7 @@ async def search_policies(query: str, ctx: Context) -> dict:
     if os.getenv("SHOP_AGENT_STACK_RETRIEVAL_MODE", "bm25") == "hybrid":
         try:
             digest=snapshot_digest([d.metadata for d in documents])
-            async with httpx.AsyncClient(timeout=2.5, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=3.5, trust_env=False) as client:
                 response=await client.post("http://retrieval-worker:8020/search",
                     headers={"X-ShopAgentStack-Index":Path("/run/secrets/index_key").read_text().strip()},
                     json={"query":query,"epoch":epoch,"digest":digest})
