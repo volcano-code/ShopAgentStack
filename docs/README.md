@@ -19,6 +19,7 @@ ShopAgentStack 的产品能力、运行方式、服务边界和测试方法。
 | [M2.5 真实 Hybrid 并发](m25-hybrid-concurrency.md) | 1/2/4/8 并发、显式降级及小样本性能边界 |
 | [M2.6 商品比较](m26-product-comparison.md) | 实时 Java 商品详情、授权及最终引用复核 |
 | [M2.7 候选发布审查](m27-release-review.md) | 十组精确版本 CI 与人工审查边界 |
+| [M2.8 应用升级与备份回退](demo-upgrade-m28.md) | 固定新旧版本、真实数据接续、SQLite 兼容及旧时间点恢复 |
 | [M2 候选版本验证](integration/m2-candidate-validation.md) | PR #62 三次独立 Hybrid 运行、真实产物与接续范围 |
 | [工程实现与归属](engineering-guide.md) | 上游边界、增量模块和源码导航 |
 | [代码结构与维护](maintainability.md) | 关键不变量、注释约定及维护约束 |
